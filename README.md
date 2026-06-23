@@ -84,22 +84,6 @@ A toolbar below the title bar provides annotation tools:
 | **Line** | Draw a straight line |
 | **Rectangle** | Draw a rectangle |
 
-Use the **color picker** to change the stroke color and the **width selector** to set the line thickness (2 / 4 / 6 / 10 / 16 px).
-
-- **Undo** (`Ctrl+Z`) — remove the last annotation
-- **Clear all** (trash icon) — remove all annotations
-
-Annotations are drawn on a transparent canvas on top of the image and follow it as you pan and zoom.
-
-### Image Resolution
-
-When an `<img>` element has a `srcset` attribute, the script picks the highest-resolution source available, so you always see the best quality version.
-
-Background images set via CSS `background-image` are also detected.
-
-### Shadow DOM Support
-
-The image lookup pierces shadow DOM roots (used by YouTube, web components, etc.), so images hidden inside custom elements are found correctly.
 
 ### Closing the Window
 
@@ -118,11 +102,6 @@ The window can be closed by:
 | `Ctrl+Z` | Undo last annotation |
 | `Esc` | Close the window |
 
-
-
-### Compatibility
-
-The script runs on all pages (`*://*/*`) and works at `document-start` to ensure early event capture. It does not interfere with the page's own keyboard and mouse handlers — all events are handled in the capture phase and propagation is stopped only when a magnifier window is open.
 
 ### Script Versions
 
