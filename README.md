@@ -26,7 +26,7 @@ Install the extension from your browser's official add-on store.
 
 **Option A — 1-click install (recommended):**
 
-1. Click the automatic install link: **[Install Image Magnifier](https://raw.githubusercontent.com/diple-df/Image-Magnifier/main/imgMagnifier.js)**
+1. Click the automatic install link: **[Install Image Magnifier](https://raw.githubusercontent.com/diple-df/Image-Magnifier/main/imgMagnifier.user.js)**
 2. Tampermonkey will automatically intercept the file and open the installation prompt
 3. Click **Install**
 

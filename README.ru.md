@@ -26,7 +26,7 @@
 
 **Вариант А — установка в один клик (рекомендуется):**
 
-1. Нажмите на ссылку автоматической установки: **[Установить Image Magnifier](https://raw.githubusercontent.com/diple-df/Image-Magnifier/main/imgMagnifier.js)**
+1. Нажмите на ссылку автоматической установки: **[Установить Image Magnifier](https://raw.githubusercontent.com/diple-df/Image-Magnifier/main/imgMagnifier.user.js)**
 2. Tampermonkey автоматически перехватит файл и откроет страницу установки
 3. Нажмите **Установить**
 
