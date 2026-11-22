@@ -5,7 +5,7 @@
 > rectangle, ellipse and text — extract the image palette, straighten a photographed document,
 > read text and QR codes, and export PNG / JPEG / WebP.
 >
-> **Author:** diple_df x claude · **Version:** 3.8.0
+> **Author:** diple_df x claude · **Version:** 3.9.0
 
 <img width="1920" height="1002" alt="image" src="https://github.com/user-attachments/assets/b0d8290d-10ed-4e5c-9b46-43765eacfb5a" />
 
@@ -101,13 +101,14 @@ A toolbar below the title bar provides annotation tools:
 
 | Tool | Key | Description |
 |---|---|---|
-| **Move** | `V` / `7` | Pan the image (default; also pan anytime with **Space** held or the middle mouse button) |
+| **Move** | `V` / `8` | Pan the image (default; also pan anytime with **Space** held or the middle mouse button) |
 | **Pencil** | `P` / `1` | Freehand drawing |
 | **Line** | `L` / `2` | Straight line |
 | **Arrow** | `A` / `3` | Arrow between two points |
 | **Rectangle** | `R` / `4` | Rectangle |
 | **Ellipse** | `E` / `5` | Ellipse (circle when constrained) |
 | **Text** | `T` / `6` | Click to place text, type, `Enter` to commit |
+| **Eraser** | `X` / `7` | Drag over shapes to remove them |
 
 Modifiers while drawing:
 
@@ -124,7 +125,7 @@ Five pinned swatches sit right in the toolbar, followed by your most recently us
 
 ### Palette from the image
 
-**Analysis → Палитра изображения** samples a 64×64 downscale, quantises it into coarse 4-bit-per-channel bins and shows the 5–8 dominant colours as swatches. Clicking a swatch copies its HEX **and** sets the brush colour, so you can annotate in the picture's own palette. Cross-origin images with a protected canvas honestly report that the palette is unavailable.
+**Analysis → Палитра изображения** samples a 64×64 downscale, quantises it into coarse 4-bit-per-channel bins and shows the 5–8 dominant colours as swatches. Clicking a swatch copies its HEX **and** sets the brush colour, so you can annotate in the picture's own palette. For cross-origin images the canvas is protected, so the script fetches the bytes through `GM_xmlhttpRequest` (which is not subject to page CORS) and builds the palette from that copy.
 
 ### Perspective correction
 
@@ -175,9 +176,9 @@ Two ways, both produce the **original image resolution** with annotations scaled
 - **`Ctrl+C`** / the copy button, **`Ctrl+S`** / the save button — export runs in the background
 
 `Ctrl+C`/`Ctrl+S` need to read pixels. Same-origin images and most CDNs work directly;
-for protected cross-origin images the script retries with a CORS request, and if that fails it tells you
-to use right-click instead. Images that fail to load at all show an in-window message with a
-"open in a new tab" link.
+for protected cross-origin images the script fetches the bytes through `GM_xmlhttpRequest`
+(not subject to page CORS) and works from that copy, so copy and save normally succeed.
+Images that fail to load at all show an in-window message with a "open in a new tab" link.
 
 ### Pin, transparency and look-only mode
 
@@ -250,6 +251,6 @@ Version segments are compared numerically, so `3.10.0` is correctly newer than `
 
 | File | Script Name | Version | Status |
 |---|---|---|---|
-| `imgMagnifier.user.js` | Image Magnifier | 3.8.0 | Current — installable |
+| `imgMagnifier.user.js` | Image Magnifier | 3.9.0 | Current — installable |
 
 ---

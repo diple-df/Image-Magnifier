@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Image Magnifier
 // @namespace    https://github.com/diple-df/Image-Magnifier
-// @version      3.8.0
+// @version      3.9.0
 // @description  Двойной Ctrl по изображению открывает его в плавающем окне: зум 5–2000% с привязкой к курсору, панорамирование, инструменты рисования (карандаш, линия, стрелка, прямоугольник, эллипс, текст), палитра изображения, перспективная коррекция, чтение текста и QR, экспорт PNG/JPEG/WebP, отмена/повтор, полностью клавиатурный режим, копирование (Ctrl+C) и сохранение (Ctrl+S)
 // @author       diple_df x claude
 // @match        *://*/*
@@ -12,6 +12,7 @@
 // @grant        GM_xmlhttpRequest
 // @connect      raw.githubusercontent.com
 // @connect      github.com
+// @connect      *
 // @downloadURL  https://raw.githubusercontent.com/diple-df/Image-Magnifier/main/imgMagnifier.user.js
 // @updateURL    https://raw.githubusercontent.com/diple-df/Image-Magnifier/main/imgMagnifier.user.js
 // @noframes     false
@@ -96,7 +97,7 @@
         const STAMP_KEY = 'img_mag_upd_ts';
         const SEEN_KEY = 'img_mag_upd_seen';
         const DAY = 86400000;
-        const LOCAL_VERSION = '3.8.0';
+        const LOCAL_VERSION = '3.9.0';
 
         function curVer() {
             try {
@@ -554,12 +555,13 @@
         help:    [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'M9.6 9.2a2.5 2.5 0 1 1 3.7 2.2c-.8.5-1.3 1.1-1.3 2v.3' }], ['path', { d: 'M12 17.4v.2' }]],
         close:   [['path', { d: 'M6 6l12 12M18 6L6 18' }]],
 
-        // 3.8.0
+        // 3.9.0
         palette: [['circle', { cx: 8.5, cy: 12, r: 2 }], ['circle', { cx: 12, cy: 7.5, r: 2 }], ['circle', { cx: 15.5, cy: 12, r: 2 }], ['path', { d: 'M12 3.2a8.8 8.8 0 1 0 0 17.6 3 3 0 0 0 2.2-5 2 2 0 0 1 1.5-3.3h1.7A3.4 3.4 0 0 0 21 9.1 8.8 8.8 0 0 0 12 3.2z' }]],
         warp:    [['path', { d: 'M4 7l5-3 7 3 4-2' }], ['path', { d: 'M4 7v10l5 3 7-3 4 2V9' }], ['path', { d: 'M9 4v10' }], ['path', { d: 'M16 7v10' }]],
         scan:    [['path', { d: 'M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8' }], ['path', { d: 'M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8' }], ['path', { d: 'M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16' }], ['path', { d: 'M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16' }], ['path', { d: 'M7.5 12h9' }]],
         qr:      [['rect', { x: 4, y: 4, width: 6, height: 6, rx: 1 }], ['rect', { x: 14, y: 4, width: 6, height: 6, rx: 1 }], ['rect', { x: 4, y: 14, width: 6, height: 6, rx: 1 }], ['path', { d: 'M14 14h2v2h-2zM18 14h2v2h-2zM14 18h2v2h-2zM18 18h2v2h-2z' }]],
         pin:     [['path', { d: 'M9 4h6l-1 5 3 3H7l3-3z' }], ['path', { d: 'M12 12v8' }]],
+        eraser:  [['path', { d: 'M8.5 20.5H20' }], ['path', { d: 'M4.6 15.9l7.1-7.1a2 2 0 0 1 2.8 0l3.5 3.5a2 2 0 0 1 0 2.8l-4.7 4.7H8.1l-3.5-3.5a2 2 0 0 1 0-2.8z' }], ['path', { d: 'M9.5 11l5.5 5.5' }]],
         export:  [['path', { d: 'M12 15V4' }], ['path', { d: 'M8 8l4-4 4 4' }], ['path', { d: 'M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3' }]],
         grid:    [['rect', { x: 4, y: 4, width: 16, height: 16, rx: 1 }], ['path', { d: 'M12 4v16M4 12h16' }], ['path', { d: 'M8 4v16M16 4v16M4 8h16M4 16h16', opacity: 0.55 }]],
         more:    [['circle', { cx: 6, cy: 12, r: 1.4 }], ['circle', { cx: 12, cy: 12, r: 1.4 }], ['circle', { cx: 18, cy: 12, r: 1.4 }]]
@@ -631,7 +633,7 @@
     let corsImage = null;
     let corsTried = false;
 
-    // --- Состояние новых возможностей (3.8.0) ------------------------------
+    // --- Состояние новых возможностей (3.9.0) ------------------------------
     let perspCanvas = null;      // выпрямленная копия картинки (1.5)
     let perspCorners = [];       // выбранные углы в координатах картинки
     let perspPicking = false;    // идёт выбор четырёх углов
@@ -665,6 +667,15 @@
     const s2i = (x, y) => ({ x: (x - tx) / scale, y: (y - ty) / scale }); // экран → картинка
 
     function sourceEl() { return perspCanvas || imgEl; }
+
+    // Источник для пиксельных операций (текст, палитра, пипетка, экспорт).
+    // Если исходный <img> «отравил» canvas, подставляем копию, скачанную
+    // в обход CORS через GM_xmlhttpRequest — у неё пиксельный доступ есть.
+    function pixelSource() {
+        if (perspCanvas) return perspCanvas;
+        if (corsImage) return corsImage;
+        return imgEl;
+    }
 
     function imageW() {
         if (perspCanvas) return perspCanvas.width;
@@ -1349,6 +1360,7 @@
             toolBtn('rect', 'rect', 'Прямоугольник (4)'),
             toolBtn('circle', 'circle', 'Эллипс (5)'),
             toolBtn('text', 'text', 'Текст (6)'),
+            toolBtn('eraser', 'eraser', 'Ластик (7)'),
             separator(), colorInput, widthSel, fillBtn,
             quickPaletteEl = buildQuickPalette(),
             tbSpacer(),
@@ -1507,6 +1519,8 @@
         perspCorners = [];
         perspPicking = false;
         perspBusy = false;
+        erasing = false;
+        eraseMoved = 0;
         scanRect = null;
         scanPick = false;
         selShape = null;
@@ -1544,7 +1558,8 @@
             ['Ctrl+1', 'Вписать в окно'],
             ['Пробел', 'Панорама (удерживать)'],
             ['СКМ', 'Панорама'],
-            ['1 … 6', 'Инструменты'],
+            ['1 … 7', 'Инструменты'],
+            ['X', 'Ластик (стирает фигуры)'],
             ['Ctrl+Z', 'Отменить'],
             ['Ctrl+Shift+Z', 'Повторить'],
             ['Shift', 'Квадрат / круг / 45°'],
@@ -2005,7 +2020,7 @@
             ctx.moveTo(bx, by);
             ctx.lineTo(bx - head * Math.cos(ang - Math.PI / 7), by - head * Math.sin(ang - Math.PI / 7));
             ctx.moveTo(bx, by);
-            ctx.lineTo(bx - head * Math.cos(ang + Math.PI / 7), by - head * Math.sin(ang - Math.PI / 7));
+            ctx.lineTo(bx - head * Math.cos(ang + Math.PI / 7), by - head * Math.sin(ang + Math.PI / 7));
             ctx.stroke();
         }
     }
@@ -2206,6 +2221,83 @@
         }, 300);
     }
 
+    // --- Ластик -------------------------------------------------------------
+    // Стирает целиком фигуры, задетые кистью: так сохраняется отмена,
+    // экспорт остаётся векторно чистым, а случайное «задевание» можно
+    // откатить одним Ctrl+Z. Режим «стирать пиксели» сознательно не делаем:
+    // он конфликтует с историей и с аннотациями в координатах картинки.
+    let erasing = false;
+    let eraseMoved = 0;
+
+    function eraserRadius() { return Math.max(6, penWidth * 2.2); }
+
+    function collectUnderCursor(sx, sy) {
+        const p = s2i(sx, sy);
+        const rad = eraserRadius() / Math.max(scale, 0.0001);
+        const out = [];
+        for (let i = annotations.length - 1; i >= 0; i--) {
+            const s = annotations[i];
+            if (!s) continue;
+            if (shapeHitsCircle(s, p.x, p.y, rad)) out.push(i);
+        }
+        return out;
+    }
+
+    // Пересекается ли фигура с кругом (cx, cy, r) в координатах картинки.
+    function shapeHitsCircle(s, cx, cy, r) {
+        const b = shapeBounds(s);
+        if (!b) return false;
+        if (cx + r < b.x1 || cx - r > b.x2 || cy + r < b.y1 || cy - r > b.y2) return false;
+        if (s.type === 'pen') {
+            const pts = s.points || [];
+            const w = Math.max(s.width / 2, 0);
+            if (!pts.length) return false;
+            if (pts.length === 1) return Math.hypot(cx - pts[0].x, cy - pts[0].y) <= r + w;
+            for (let k = 1; k < pts.length; k++) {
+                if (distToSegment(cx, cy, pts[k - 1].x, pts[k - 1].y, pts[k].x, pts[k].y) <= r + w) return true;
+            }
+            return false;
+        }
+        if (s.type === 'line' || s.type === 'arrow') {
+            return distToSegment(cx, cy, s.x1, s.y1, s.x2, s.y2) <= r + Math.max(s.width / 2, 0);
+        }
+        if (s.type === 'rect' || s.type === 'circle') {
+            const x1 = Math.min(s.x1, s.x2), y1 = Math.min(s.y1, s.y2);
+            const x2 = Math.max(s.x1, s.x2), y2 = Math.max(s.y1, s.y2);
+            if (s.fill) {
+                // заливка: достаточно попадания в область
+                if (s.type === 'rect') return cx >= x1 - r && cx <= x2 + r && cy >= y1 - r && cy <= y2 + r;
+                const rx = Math.max((x2 - x1) / 2, 0.0001), ry = Math.max((y2 - y1) / 2, 0.0001);
+                const nx = (cx - (x1 + rx)) / (rx + r), ny = (cy - (y1 + ry)) / (ry + r);
+                return nx * nx + ny * ny <= 1;
+            }
+            // контур: проверяем четыре стороны/эллипс по рамке
+            if (s.type === 'rect') {
+                return distToSegment(cx, cy, x1, y1, x2, y1) <= r + s.width / 2
+                    || distToSegment(cx, cy, x2, y1, x2, y2) <= r + s.width / 2
+                    || distToSegment(cx, cy, x2, y2, x1, y2) <= r + s.width / 2
+                    || distToSegment(cx, cy, x1, y2, x1, y1) <= r + s.width / 2;
+            }
+            return cx >= x1 - r && cx <= x2 + r && cy >= y1 - r && cy <= y2 + r;
+        }
+        // текст — по рамке
+        return true;
+    }
+
+    function eraseAt(sx, sy) {
+        const idx = collectUnderCursor(sx, sy);
+        if (!idx.length) return false;
+        const drop = new Set(idx);
+        const next = [];
+        for (let i = 0; i < annotations.length; i++) {
+            if (!drop.has(i)) next.push(annotations[i]);
+        }
+        annotations = next;
+        if (selShape && annotations.indexOf(selShape) === -1) selShape = null;
+        eraseMoved += idx.length;
+        return true;
+    }
+
     // --- Геометрия и инструменты -------------------------------------------
     function getViewRect() {
         if (!viewRect && viewEl) viewRect = viewEl.getBoundingClientRect();
@@ -2222,6 +2314,9 @@
             viewEl.style.cursor = ghostMode ? 'default'
                 : (name === 'move' ? 'grab' : 'crosshair');
         }
+        // ластик — единственный инструмент, который стирает, а не рисует:
+        // предупреждаем и подсказываем, что вся кисть отменяется одним Ctrl+Z
+        if (name === 'eraser' && !silent) announce('Ластик: проведите по фигуре, чтобы стереть');
         if (!silent) storeSet('img_mag_tool', name);
     }
 
@@ -2305,6 +2400,16 @@
     function beginStroke(sx, sy) {
         if (currentTool === 'move') return false;
         if (currentTool === 'text') { openTextEditor(sx, sy); return false; }
+        if (currentTool === 'eraser') {
+            // Ластик — отдельный режим: фигуры удаляются по мере движения,
+            // а один commit() в конце даёт одну запись в истории на весь жест.
+            if (erasing) return false;
+            erasing = true;
+            eraseMoved = 0;
+            eraseAt(sx, sy);
+            invalidate();
+            return true;
+        }
         if (drawing) return false;
         if (annotations.length >= MAX_ANNOTATIONS) {
             toast('Достигнут лимит аннотаций (' + MAX_ANNOTATIONS + ')');
@@ -2331,6 +2436,10 @@
     }
 
     function updateStroke(sx, sy, shift, alt) {
+        if (erasing) {
+            if (eraseAt(sx, sy)) invalidate();
+            return true;
+        }
         if (!inProgress) return false;
         const p = s2i(sx, sy);
 
@@ -2376,6 +2485,18 @@
     }
 
     function endStroke(cancel) {
+        if (erasing) {
+            erasing = false;
+            const n = eraseMoved;
+            eraseMoved = 0;
+            if (!cancel && n > 0) {
+                commit();
+                toast(n === 1 ? 'Удалена 1 фигура' : 'Удалено фигур: ' + n);
+            } else {
+                requestDraw();
+            }
+            return;
+        }
         if (!drawing) { inProgress = null; return; }
         drawing = false;
         const s = inProgress;
@@ -2388,6 +2509,12 @@
     }
 
     function cancelStroke() {
+        if (erasing) {
+            erasing = false;
+            eraseMoved = 0;
+            invalidate();
+            return;
+        }
         if (drawing) endStroke(true);
         inProgress = null;
     }
@@ -2582,7 +2709,7 @@
         if (currentTool === 'move') {
             // 4.2 — в режиме панорамы даём тащить выбранную/найденную фигуру
             const p = s2i(sx, sy);
-            const hit = hitTest(p.x, p.y);
+            const hit = currentTool === 'eraser' ? -1 : hitTest(p.x, p.y);
             if (hit !== -1) {
                 const shape = annotations[hit];
                 e.preventDefault();
@@ -2601,8 +2728,9 @@
         }
 
         // рисующие инструменты: проверяем попадание по фигуре для правки
+        // (ластик сюда не относится — он стирает, а не таскает)
         const ip = s2i(sx, sy);
-        const hitIdx = hitTest(ip.x, ip.y);
+        const hitIdx = currentTool === 'eraser' ? -1 : hitTest(ip.x, ip.y);
         if (hitIdx !== -1 && annotations[hitIdx]) {
             const shape = annotations[hitIdx];
             e.preventDefault();
@@ -2646,6 +2774,12 @@
 
     function onMouseMove(e) {
         if (!win) return;
+
+        if (erasing) {
+            const r = getViewRect();
+            updateStroke(e.clientX - r.left, e.clientY - r.top, e.shiftKey, e.altKey);
+            return;
+        }
 
         if (drawing && inProgress) {
             const r = getViewRect();
@@ -2729,6 +2863,10 @@
     }
 
     function onMouseUp() {
+        if (erasing) {
+            endStroke(false);
+            return;
+        }
         if (drawing) {
             endStroke(false);
             return;
@@ -2780,6 +2918,7 @@
     function onContextMenu(e) {
         // нативное меню нужно (Копировать/Сохранить изображение),
         // но незавершённый штрих надо сбросить
+        if (erasing) { erasing = false; eraseMoved = 0; invalidate(); }
         if (drawing) endStroke(true);
         if (e.target !== drawEl && e.target !== viewEl) return;
     }
@@ -2961,6 +3100,17 @@
         const iw = imageW(), ih = imageH();
         if (!src || !iw || !ih) return;
 
+        // Отравленный canvas: пробуем CORS-копию, иначе палитры не будет
+        if (canExport === false || canExport === null) {
+            checkExportable();
+            if (canExport === false) {
+                loadCorsImage().then((im) => {
+                    if (im && win) { corsImage = im; buildImagePalette(); }
+                });
+                return;
+            }
+        }
+
         let data = null;
         try {
             const c = document.createElement('canvas');
@@ -2973,7 +3123,7 @@
             // «contain» — чтобы не растянуть пропорции, но выборка всё равно
             // покрывает картинку целиком
             x.fillStyle = '#000';
-            x.drawImage(src, 0, 0, PALETTE_SAMPLE, PALETTE_SAMPLE);
+            x.drawImage(pixelSource(), 0, 0, PALETTE_SAMPLE, PALETTE_SAMPLE);
             data = x.getImageData(0, 0, PALETTE_SAMPLE, PALETTE_SAMPLE).data;
         } catch (e) {
             imagePalette = [];   // tainted canvas: палитры не будет
@@ -3148,7 +3298,17 @@
     // в выходной холст разумного размера (иначе большие фото подвесили бы вкладку).
     function applyPerspective() {
         if (perspCorners.length !== 4 || perspBusy) return;
-        const src = sourceEl();
+        if (!sourceEl()) return;
+        // getImageData ниже требует пиксельного доступа: на чужой картинке
+        // сначала добываем CORS-копию, иначе всё падает на taint.
+        ensurePixels().then((src) => {
+            if (!win) return;
+            if (!src) { toast('Нет доступа к пикселям этой картинки'); return; }
+            runPerspective(src);
+        });
+    }
+
+    function runPerspective(src) {
         const iw = imageW(), ih = imageH();
         if (!src || !iw || !ih) return;
 
@@ -3317,30 +3477,34 @@
     }
 
     // Вырезаем область в offscreen-холст (ограниченного размера).
+    // Через ensurePixels: на чужой картинке берём CORS-копию, иначе
+    // getImageData/toBlob в распознавании текста падают на taint.
     function cropRegion(rect, scaleUp) {
-        const src = sourceEl();
-        if (!src) return null;
-        let w = Math.max(1, Math.round(rect.w * (scaleUp || 1)));
-        let h = Math.max(1, Math.round(rect.h * (scaleUp || 1)));
-        const cap = SCAN_MAX_SIDE;
-        if (w > cap || h > cap) {
-            const k = cap / Math.max(w, h);
-            w = Math.max(1, Math.round(w * k));
-            h = Math.max(1, Math.round(h * k));
-        }
-        try {
-            const cv = document.createElement('canvas');
-            cv.width = w;
-            cv.height = h;
-            const c = cv.getContext('2d');
-            if (!c) return null;
-            c.imageSmoothingEnabled = true;
-            if (c.imageSmoothingQuality) c.imageSmoothingQuality = 'high';
-            c.drawImage(src, rect.x, rect.y, rect.w, rect.h, 0, 0, w, h);
-            return cv;
-        } catch (e) {
-            return null;
-        }
+        if (!sourceEl()) return null;
+        return ensurePixels().then((src) => {
+            if (!src) return null;
+            let w = Math.max(1, Math.round(rect.w * (scaleUp || 1)));
+            let h = Math.max(1, Math.round(rect.h * (scaleUp || 1)));
+            const cap = SCAN_MAX_SIDE;
+            if (w > cap || h > cap) {
+                const k = cap / Math.max(w, h);
+                w = Math.max(1, Math.round(w * k));
+                h = Math.max(1, Math.round(h * k));
+            }
+            try {
+                const cv = document.createElement('canvas');
+                cv.width = w;
+                cv.height = h;
+                const c = cv.getContext('2d');
+                if (!c) return null;
+                c.imageSmoothingEnabled = true;
+                if (c.imageSmoothingQuality) c.imageSmoothingQuality = 'high';
+                c.drawImage(src, rect.x, rect.y, rect.w, rect.h, 0, 0, w, h);
+                return cv;
+            } catch (e) {
+                return null;
+            }
+        });
     }
 
     function runScan(rect) {
@@ -3366,9 +3530,18 @@
             toast('BarcodeDetector недоступен в этом браузере');
             return;
         }
-        const cv = cropRegion(rect, 1);
-        if (!cv) { toast('Не удалось вырезать область'); return; }
+        ensurePixels().then((src) => {
+            if (!win) return;
+            if (!src) { toast('Нет доступа к пикселям этой картинки'); return; }
+            cropRegion(rect, 1).then((cv) => {
+                if (!win) return;
+                if (!cv) { toast('Не удалось вырезать область'); return; }
+                runBarcode(cv);
+            });
+        });
+    }
 
+    function runBarcode(cv) {
         let formats = [];
         try {
             if (BarcodeDetector.getSupportedFormats) {
@@ -3464,45 +3637,52 @@
 
     // --- 2.3 Текст: локальный TextDetector или честный фолбэк ---------------
     function readText(rect) {
-        const cv = cropRegion(rect, 1);
-        if (!cv) { toast('Не удалось вырезать область'); return; }
-
-        if (typeof window.TextDetector === 'function') {
-            let det;
-            try { det = new window.TextDetector(); } catch (e) { det = null; }
-            if (det) {
-                let p;
-                try { p = det.detect(cv); } catch (e) { p = null; }
-                if (p && typeof p.then === 'function') {
-                    p.then((found) => {
-                        if (!win) return;
-                        const blocks = (found || []).map((f) => String(f.rawValue || '')).filter(Boolean);
-                        if (blocks.length) showTextResult(blocks.join('\n'), rect, true);
-                        else textFallback(rect, 'TextDetector не нашёл текст');
-                    }).catch(() => textFallback(rect, 'TextDetector недоступен'));
-                    return;
+        ensurePixels().then((src) => {
+            if (!win) return;
+            if (!src) { toast('Нет доступа к пикселям этой картинки'); return; }
+            cropRegion(rect, 1).then((cv) => {
+                if (!win) return;
+                if (!cv) { toast('Не удалось вырезать область'); return; }
+                if (typeof window.TextDetector === 'function') {
+                    let det;
+                    try { det = new window.TextDetector(); } catch (e) { det = null; }
+                    if (det) {
+                        let p;
+                        try { p = det.detect(cv); } catch (e) { p = null; }
+                        if (p && typeof p.then === 'function') {
+                            p.then((found) => {
+                                if (!win) return;
+                                const blocks = (found || []).map((f) => String(f.rawValue || '')).filter(Boolean);
+                                if (blocks.length) showTextResult(blocks.join('\n'), rect, true);
+                                else textFallback(rect, 'TextDetector не нашёл текст');
+                            }).catch(() => textFallback(rect, 'TextDetector не сработал'));
+                            return;
+                        }
+                    }
                 }
-            }
-        }
-        textFallback(rect, 'TextDetector недоступен в этом браузере');
+                textFallback(rect, 'TextDetector недоступен в этом браузере');
+            });
+        });
     }
 
     function textFallback(rect, why) {
-        const up = cropRegion(rect, OCR_SCALE);
-        if (!up) { toast('Не удалось вырезать область'); return; }
-        const note = (why ? why + '. ' : '') +
-            'Область увеличена в ' + OCR_SCALE + '× и положена в буфер — вставьте её в любой OCR-сервис.';
-        announce('Область увеличена и скопирована');
-        if (!navigator.clipboard || !window.ClipboardItem) {
-            showTextResult('', rect, false, note + ' Копирование картинок не поддерживается.');
-            return;
-        }
-        up.toBlob((blob) => {
-            if (!win || !blob) return;
-            navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
-                .then(() => showTextResult('', rect, false, note))
-                .catch(() => showTextResult('', rect, false, note + ' Скопировать не удалось — сохраните PNG.'));
-        }, 'image/png');
+        cropRegion(rect, OCR_SCALE).then((up) => {
+            if (!win) return;
+            if (!up) { toast('Не удалось вырезать область'); return; }
+            const note = (why ? why + '. ' : '') +
+                'Область увеличена в ' + OCR_SCALE + '× и положена в буфер — вставьте её в любой OCR-сервис.';
+            announce('Область увеличена и скопирована');
+            if (!navigator.clipboard || !window.ClipboardItem) {
+                showTextResult('', rect, false, note + ' Копирование картинок не поддерживается.');
+                return;
+            }
+            up.toBlob((blob) => {
+                if (!win || !blob) return;
+                navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+                    .then(() => showTextResult('', rect, false, note))
+                    .catch(() => showTextResult('', rect, false, note + ' Скопировать не удалось — сохраните PNG.'));
+            }, 'image/png');
+        });
     }
 
     function showTextResult(text, rect, detected, note) {
@@ -3878,19 +4058,78 @@
         }
     }
 
+    // Обход CORS: картинку тянем через GM_xmlhttpRequest, который в
+    // Tampermonkey не подчиняется политике origin, и подсовываем как Blob.
+    // Без этого canvas с чужой картинки «отравлен»: getImageData/toBlob
+    // падают, а значит не работают текст, палитра, пипетка и экспорт.
     function loadCorsImage() {
         if (corsImage) return Promise.resolve(corsImage);
         if (corsTried) return Promise.resolve(null);
         corsTried = true;
 
+        const viaBlob = (blob) => new Promise((resolve) => {
+            if (!blob) { resolve(null); return; }
+            let url;
+            try { url = URL.createObjectURL(blob); } catch (e) { resolve(null); return; }
+            const im = new Image();
+            im.onload = () => {
+                corsImage = im;
+                // отзываем позже: объект уже декодирован в память
+                setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ } }, 1000);
+                resolve(im);
+            };
+            im.onerror = () => resolve(null);
+            im.src = url;
+        });
+
         return new Promise((resolve) => {
             if (!imageUrl || !/^https?:/i.test(imageUrl)) { resolve(null); return; }
-            const im = new Image();
-            im.crossOrigin = 'anonymous';
-            im.onload = () => { corsImage = im; resolve(im); };
-            im.onerror = () => resolve(null);
-            im.src = imageUrl;
+
+            // 1) Прямой запрос с WebRequest-правами расширения.
+            if (typeof GM_xmlhttpRequest === 'function') {
+                try {
+                    GM_xmlhttpRequest({
+                        method: 'GET',
+                        url: imageUrl,
+                        responseType: 'blob',
+                        timeout: 15000,
+                        onload: (res) => {
+                            if (res && res.status >= 200 && res.status < 300 && res.response) {
+                                viaBlob(res.response).then(resolve);
+                            } else {
+                                resolve(null);
+                            }
+                        },
+                        onerror: () => resolve(null),
+                        ontimeout: () => resolve(null),
+                    });
+                    return;
+                } catch (e) { /* падаем в обычный fetch */ }
+            }
+
+            // 2) Обычный fetch: сработает, если сайт отдаёт CORS-заголовки.
+            if (typeof fetch === 'function') {
+                fetch(imageUrl, { mode: 'cors', credentials: 'omit', cache: 'force-cache' })
+                    .then((r) => (r.ok ? r.blob() : null))
+                    .then(viaBlob)
+                    .then(resolve)
+                    .catch(() => resolve(null));
+                return;
+            }
+            resolve(null);
         });
+    }
+
+    // Есть ли пиксельный доступ. Требуется для палитры/пипетки/текста:
+    // на «отравленном» canvas эти функции молча не работают.
+    function pixelsReady() { return canExport === true; }
+
+    // Пробуем получить пиксельный доступ и заодно подгружаем CORS-копию.
+    // Возвращает Promise с источником, у которого точно есть getImageData.
+    function ensurePixels() {
+        if (canExport === null) checkExportable();
+        if (canExport === true) return Promise.resolve(sourceEl());
+        return loadCorsImage().then((im) => im || null);
     }
 
     const EXPORT_MAX_PIXELS = 40 * 1000 * 1000; // ~40 Мпикс — предел одного полотна
@@ -4021,13 +4260,13 @@
 
     // --- Клавиатура ---------------------------------------------------------
     const TOOL_KEYS = {
-        v: 'move', p: 'pen', l: 'line', a: 'arrow', r: 'rect', e: 'circle', t: 'text'
+        v: 'move', p: 'pen', l: 'line', a: 'arrow', r: 'rect', e: 'circle', t: 'text', x: 'eraser'
     };
 
     // 4.1: цифры — инструменты, как в большинстве редакторов
     const TOOL_DIGITS = {
         '1': 'pen', '2': 'line', '3': 'arrow', '4': 'rect', '5': 'circle', '6': 'text',
-        '7': 'move',
+        '7': 'eraser', '8': 'move',
     };
 
     function onKeyUp(e) {
@@ -4250,7 +4489,7 @@
     function shapeToolLabel(name) {
         const map = {
             move: 'перемещение', pen: 'карандаш', line: 'линия', arrow: 'стрелка',
-            rect: 'прямоугольник', circle: 'эллипс', text: 'текст',
+            rect: 'прямоугольник', circle: 'эллипс', text: 'текст', eraser: 'ластик',
         };
         return map[name] || name;
     }
@@ -4337,6 +4576,8 @@
     function closeWindow() {
         if (!win) return;
 
+        erasing = false;
+        eraseMoved = 0;
         persistNow();
         closeMenu();
         unwatchDpr();
