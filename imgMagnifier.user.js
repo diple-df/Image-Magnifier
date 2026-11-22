@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Image Magnifier
 // @namespace    https://github.com/diple-df/Image-Magnifier
-// @version      3.6.0
+// @version      3.6.1
 // @description  Двойной Ctrl по изображению открывает его в плавающем окне: зум 5–2000% с привязкой к курсору, панорамирование, инструменты рисования (карандаш, линия, стрелка, прямоугольник, эллипс, текст), отмена/повтор, копирование (Ctrl+C) и сохранение PNG (Ctrl+S) с объединёнными слоями, поддержка касаний
 // @author       diple_df x claude
 // @match        *://*/*
@@ -1278,8 +1278,14 @@
             inp.style.top = inp._top + 'px';
         };
 
+        let finished = false;
         const finish = (keep) => {
-            if (!inp.isConnected) return;
+            // remove() снимает фокус и синхронно вызывает blur -> повторный
+            // вход в finish. Без этого флага второй вход падал с NotFoundError.
+            if (finished || !inp.isConnected) return;
+            finished = true;
+            inp._finish = null;
+            if (textInput === inp) textInput = null;
             const value = inp.value.replace(/\r\n?/g, '\n').replace(/[ \t]+$/gm, '');
             // якорь = финальная позиция редактора, переведённая в координаты
             // картинки. Никакого двойного масштабирования: и редактор, и рендер
@@ -1288,8 +1294,7 @@
                 inp._left === undefined ? baseLeft : inp._left,
                 inp._top === undefined ? baseTop : inp._top
             );
-            inp.remove();
-            if (textInput === inp) textInput = null;
+            if (inp.parentNode) inp.parentNode.removeChild(inp);
 
             if (keep && value.trim()) {
                 pushAnnotation({
