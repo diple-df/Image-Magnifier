@@ -5,7 +5,7 @@
 > карандаш, линия, стрелка, прямоугольник, эллипс и текст, — а также палитра изображения,
 > выпрямление перспективы, чтение текста и QR-кодов и экспорт в PNG / JPEG / WebP.
 >
-> **Автор:** diple_df x claude · **Версия:** 3.9.0
+> **Автор:** diple_df x claude · **Версия:** 3.10.0
 
 <img width="1920" height="1002" alt="image" src="https://github.com/user-attachments/assets/b0d8290d-10ed-4e5c-9b46-43765eacfb5a" />
 
@@ -266,6 +266,6 @@
 
 | Файл | Название скрипта | Версия | Статус |
 |---|---|---|---|
-| `imgMagnifier.user.js` | Image Magnifier | 3.9.0 | Актуальная — для установки |
+| `imgMagnifier.user.js` | Image Magnifier | 3.10.0 | Актуальная — для установки |
 
 ---

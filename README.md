@@ -5,7 +5,7 @@
 > rectangle, ellipse and text — extract the image palette, straighten a photographed document,
 > read text and QR codes, and export PNG / JPEG / WebP.
 >
-> **Author:** diple_df x claude · **Version:** 3.9.0
+> **Author:** diple_df x claude · **Version:** 3.10.0
 
 <img width="1920" height="1002" alt="image" src="https://github.com/user-attachments/assets/b0d8290d-10ed-4e5c-9b46-43765eacfb5a" />
 
@@ -198,6 +198,15 @@ page underneath while the reference stays visible.
 **Ещё → Сетка пикселей** (or `G`) draws a thin per-pixel grid with coordinates once the
 effective zoom reaches 800%. It is off by default and remembered between sessions.
 
+### Large images
+
+A 48-megapixel photo used to freeze the tab for about a third of a second when the window opened,
+because the script rescaled the full-size source on the main thread. It now works in the background
+instead: the image is copied down in horizontal bands through `requestIdleCallback`, and every pixel
+probe (export check, palette, mipmap) waits for that smaller copy. Measured on an 8000x6000 source in
+headless Edge: zero long tasks on open, zero during a 40-step zoom, and the full 2000% range still
+reaches. Only the visible region is drawn each frame, so cost follows the window size, not the photo.
+
 ### Floating window ergonomics
 
 The window itself can be dragged by the title bar and resized from the bottom-right corner. Window
@@ -257,6 +266,6 @@ Version segments are compared numerically, so `3.10.0` is correctly newer than `
 
 | File | Script Name | Version | Status |
 |---|---|---|---|
-| `imgMagnifier.user.js` | Image Magnifier | 3.9.0 | Current — installable |
+| `imgMagnifier.user.js` | Image Magnifier | 3.10.0 | Current — installable |
 
 ---

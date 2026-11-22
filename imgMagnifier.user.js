@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Image Magnifier
 // @namespace    https://github.com/diple-df/Image-Magnifier
-// @version      3.9.0
+// @version      3.10.0
 // @description  Двойной Ctrl по изображению открывает его в плавающем окне: зум 5–2000% с привязкой к курсору, панорамирование, инструменты рисования (карандаш, линия, стрелка, прямоугольник, эллипс, текст), палитра изображения, перспективная коррекция, чтение текста и QR, экспорт PNG/JPEG/WebP, отмена/повтор, полностью клавиатурный режим, копирование (Ctrl+C) и сохранение (Ctrl+S)
 // @author       diple_df x claude
 // @match        *://*/*
@@ -50,6 +50,12 @@
     const OCR_SCALE = 4;           // увеличение фолбэка «скопировать картинку»
     const CACHE_MAX_ENTRIES = 3;   // «тёплые» состояния зум/панорама
     const CACHE_MAX_BYTES = 24 * 1024 * 1024; // предел памяти кэша
+const PYRAMID_MAX_LEVELS = 3;  // уровней уменьшения не больше трёх
+const PYRAMID_MAX_PIXELS = 12 * 1000 * 1000; // суммарный бюджет пирамиды
+const PYRAMID_MAX_SOURCE = 40 * 1000 * 1000; // крупнее — пирамиду не строим
+const HUGE_PIXELS = 20 * 1000 * 1000; // выше — готовим уменьшенную копию в фоне
+const HUGE_MAX_SIDE = 4096;           // длинная сторона этой копии
+const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходника в одной полосе
     const HIT_TOLERANCE = 6;       // допуск хит-теста аннотаций (экранные px)
 
     // --- Безопасное хранилище (localStorage может бросать) ----------------
@@ -97,7 +103,7 @@
         const STAMP_KEY = 'img_mag_upd_ts';
         const SEEN_KEY = 'img_mag_upd_seen';
         const DAY = 86400000;
-        const LOCAL_VERSION = '3.9.0';
+        const LOCAL_VERSION = '3.10.0';
 
         function curVer() {
             try {
@@ -666,7 +672,7 @@
 
     const s2i = (x, y) => ({ x: (x - tx) / scale, y: (y - ty) / scale }); // экран → картинка
 
-    function sourceEl() { return perspCanvas || imgEl; }
+    function sourceEl() { return perspCanvas || hugeSource || imgEl; }
 
     // Источник для пиксельных операций (текст, палитра, пипетка, экспорт).
     // Если исходный <img> «отравил» canvas, подставляем копию, скачанную
@@ -1156,6 +1162,9 @@
         canExport = null;
         corsImage = null;
         corsTried = false;
+        if (hugeSource) { try { hugeSource.close && hugeSource.close(); } catch (e) {} }
+        hugeSource = null;
+        hugeTried = false;
 
         const savedW = clamp(storeNum('img_mag_w', WIN_W), Math.min(280, innerWidth - 16), Math.max(280, innerWidth - 16));
         const savedH = clamp(storeNum('img_mag_h', WIN_H), Math.min(200, innerHeight - 16), Math.max(200, innerHeight - 16));
@@ -1498,9 +1507,7 @@
             } else {
                 invalidate();
             }
-            checkExportable();
-            buildPyramid();
-            buildImagePalette();
+            afterSourceReady();
         });
         imgEl.addEventListener('error', () => {
             if (!win) return;
@@ -1680,6 +1687,116 @@
         return true;
     }
 
+    // --- Подготовка очень больших снимков ---------------------------------
+    // Сжать 8000×6000 в окно 640 px — это ~48 Мпикс пересчёта на главном
+    // потоке. Замерено: 346 мс одной длинной задачей при открытии окна, из-за
+    // которых вкладка «замирает». createImageBitmap с resize выполняет ту же
+    // работу в фоновом потоке, после чего кадры работают с копией ≤4096 px.
+    let hugeSource = null;
+    let hugeTried = false;
+
+    // Уменьшает источник полосами. Каждый drawImage трогает только часть
+    // исходника, поэтому главный поток не блокируется надолго.
+    // onDone(canvas) вызывается один раз в конце; onFail() — при ошибке.
+    function bandDownscale(src, sw, sh, tw, th, onDone, onFail) {
+        let cv;
+        try {
+            cv = document.createElement('canvas');
+            cv.width = tw;
+            cv.height = th;
+        } catch (e) { if (onFail) onFail(); return; }
+        const cx = cv.getContext('2d');
+        if (!cx) { if (onFail) onFail(); return; }
+        if (cx.imageSmoothingQuality) cx.imageSmoothingQuality = 'low';
+        const kx = tw / sw;
+        const ky = th / sh;
+        const bandSrc = Math.max(64, Math.min(sh, Math.floor(HUGE_BAND_PIXELS / Math.max(1, sw))));
+        let sy = 0;
+        const step = () => {
+            if (sy >= sh) { onDone(cv); return; }
+            const h = Math.min(bandSrc, sh - sy);
+            try {
+                cx.drawImage(src, 0, sy, sw, h,
+                             0, Math.round(sy * ky), tw, Math.max(1, Math.round(h * ky)));
+            } catch (e) { if (onFail) onFail(); return; }
+            sy += h;
+            if (typeof requestIdleCallback === 'function') {
+                requestIdleCallback(step, { timeout: 400 });
+            } else {
+                setTimeout(step, 16);
+            }
+        };
+        step();
+    }
+
+    // Тяжёлые шаги после загрузки картинки идут в таком порядке:
+    // 1) уменьшенная копия для огромных снимков (полосами, в простое),
+    // 2) проверка «отравленности» canvas — уже на копии, а не на исходнике,
+    // 3) пирамида и палитра.
+    // Раньше проверка шла первой и одна стоила ~360 мс блокировки.
+    function afterSourceReady() {
+        const iw = imageW(), ih = imageH();
+        const huge = iw && ih && iw * ih > HUGE_PIXELS && imgEl && imgEl.naturalWidth;
+        if (!huge) {
+            checkExportable();
+            buildPyramid();
+            buildImagePalette();
+            return;
+        }
+        prepareHugeSource();
+        // prepareHugeSource выставит hugeSource и сам попросит перерисовку;
+        // ждём его в простое, не блокируя открытие окна.
+        const wait = (tries) => {
+            if (!win) return;
+            if (hugeSource) {
+                checkExportable();
+                buildPyramid();
+                buildImagePalette();
+                return;
+            }
+            if (tries <= 0) {
+                // копия не получилась — работаем как раньше
+                checkExportable();
+                buildPyramid();
+                buildImagePalette();
+                return;
+            }
+            if (typeof requestIdleCallback === 'function') {
+                requestIdleCallback(() => wait(tries - 1), { timeout: 600 });
+            } else {
+                setTimeout(() => wait(tries - 1), 40);
+            }
+        };
+        if (typeof requestIdleCallback === 'function') {
+            requestIdleCallback(() => wait(200), { timeout: 600 });
+        } else {
+            setTimeout(() => wait(200), 40);
+        }
+    }
+
+    function prepareHugeSource() {
+        if (hugeTried || hugeSource) return;
+        const iw = imageW(), ih = imageH();
+        if (!iw || !ih || iw * ih <= HUGE_PIXELS) return;
+        if (!imgEl || !imgEl.naturalWidth) return;
+        hugeTried = true;
+        const k = Math.min(1, HUGE_MAX_SIDE / Math.max(iw, ih));
+        if (k >= 1) return;
+        const rw = Math.max(1, Math.round(iw * k));
+        const rh = Math.max(1, Math.round(ih * k));
+
+        // Один drawImage всего снимка — это одна длинная задача (замерено
+        // ~520 мс на 48 Мпикс) и вкладка на это время замирает. Поэтому
+        // режем на полосы и рисуем их по одной в простое.
+        bandDownscale(imgEl, iw, ih, rw, rh, (cv) => {
+            if (!win) return;
+            hugeSource = cv;
+            baseValid = false;
+            clearBaseCache();
+            requestDraw();
+        }, null);
+    }
+
     // --- 6.1 Пирамида уровней (mipmap) -------------------------------------
     // Предварительно строим 1/2, 1/4, 1/8. При уменьшении картинки рисуем
     // мелкий уровень вместо гигантского исходника — это дешевле и плавнее.
@@ -1688,14 +1805,32 @@
         pyramidLevel = 0;
         const iw = imageW(), ih = imageH();
         if (!iw || !ih || iw * ih < 1200 * 1200) return; // смысл есть только на больших
+        // Очень большие снимки не уменьшаем заранее: кадр и так рисует только
+        // видимую область, а три полноразмерных canvas на 8000×6000 — это
+        // ~100 МБ памяти и сотни миллисекунд блокировки вкладки.
+        if (iw * ih > PYRAMID_MAX_SOURCE) return;
+        // Пирамида нужна только для уменьшения, поэтому берём уровень под
+        // минимальный реальный масштаб, а не «все три всегда»: каждый уровень
+        // это полноразмерный canvas (для 8000×6000 три уровня — ~100 МБ).
         const levels = [];
         let w = iw, h = ih;
-        for (let i = 0; i < 3; i++) {
+        for (let i = 0; i < PYRAMID_MAX_LEVELS; i++) {
             w = Math.max(1, Math.round(w / 2));
             h = Math.max(1, Math.round(h / 2));
             if (w < 32 || h < 32) break;
             levels.push({ w: w, h: h, canvas: null });
         }
+        // Считаем суммарный бюджет честно, от первого уровня к последнему.
+        const kept = [];
+        let used = 0;
+        for (let i = 0; i < levels.length; i++) {
+            const px = levels[i].w * levels[i].h;
+            if (used + px > PYRAMID_MAX_PIXELS) break;
+            used += px;
+            kept.push(levels[i]);
+        }
+        levels.length = 0;
+        for (let i = 0; i < kept.length; i++) levels.push(kept[i]);
         if (!levels.length) return;
         pyramid = levels;
 
@@ -1713,14 +1848,22 @@
                 const cx = cv.getContext('2d');
                 if (!cx) { done(); return; }
                 cx.imageSmoothingEnabled = true;
-                if (cx.imageSmoothingQuality) cx.imageSmoothingQuality = 'high';
+                // 'high' на многомегапиксельном источнике блокирует поток на
+                // сотни миллисекунд; для уровня-превью хватает 'low'.
+                if (cx.imageSmoothingQuality) cx.imageSmoothingQuality = 'low';
                 cx.drawImage(src, 0, 0, lv.w, lv.h);
                 lv.canvas = cv;
             } catch (e) { /* taint и прочее — просто без уровня */ }
             done();
         };
-        // строим асинхронно, чтобы не задерживать первый кадр
-        setTimeout(step, 60);
+        // Строим в простое, по одному уровню: даже один уровень на большом
+        // снимке — это заметная работа, и делать её во время первого кадра нельзя.
+        const idle = (fn) => {
+            if (typeof requestIdleCallback === 'function') requestIdleCallback(fn, { timeout: 1500 });
+            else setTimeout(fn, 120);
+        };
+        const kick = () => { if (win && pyramid) idle(step); };
+        setTimeout(kick, 80);
     }
 
     // Какой уровень рисовать при текущем масштабе.
@@ -1822,15 +1965,47 @@
         if (iw && ih && scale > 0) {
             // при сильном увеличении показываем пиксели без сглаживания
             c.imageSmoothingEnabled = scale < 3;
-            if (c.imageSmoothingQuality) c.imageSmoothingQuality = 'high';
+            // 'high' на каждый кадр зума — лишние десятки миллисекунд.
+            if (c.imageSmoothingQuality) c.imageSmoothingQuality = 'medium';
             const src = sourceEl();
             const lv = pyramidFor(scale);
-            if (lv) {
-                c.drawImage(lv.canvas, tx, ty, iw * scale, ih * scale);
-            } else {
-                c.drawImage(src, tx, ty, iw * scale, ih * scale);
+            const useSrc = lv ? lv.canvas : src;
+            // Огромный снимок нельзя масштабировать на главном потоке ни разу:
+            // даже один кадр 8000×6000 → 640 px блокирует вкладку на ~0.5 с.
+            // Пока фоновая копия не готова, кадр остаётся пустым — копия
+            // приходит за десятки миллисекунд и сама просит перерисовку.
+            if (!lv && !perspCanvas && !hugeSource && iw * ih > HUGE_PIXELS) { /* ждём копию */ }
+            else {
+            const useW = lv ? lv.w : iw;
+            const useH = lv ? lv.h : ih;
+            // Отрисовка ТОЛЬКО видимой области. Раньше кадр рисовал картинку
+            // целиком (drawImage на всю iw*scale × ih*scale): на фото
+            // 8000×6000 это давало кадр в 323 мс и подвисание вкладки.
+            // Сейчас размер работы зависит от площади окна, а не картинки.
+            let ix0 = Math.max(0, Math.floor((0 - tx) / scale));
+            let iy0 = Math.max(0, Math.floor((0 - ty) / scale));
+            let ix1 = Math.min(iw, Math.ceil((viewW - tx) / scale));
+            let iy1 = Math.min(ih, Math.ceil((viewH - ty) / scale));
+            if (ix1 > ix0 && iy1 > iy0) {
+                // запас в 2 пикселя: сглаживание не даёт шва на границе
+                ix0 = Math.max(0, ix0 - 2);
+                iy0 = Math.max(0, iy0 - 2);
+                ix1 = Math.min(iw, ix1 + 2);
+                iy1 = Math.min(ih, iy1 + 2);
+                if (useSrc) {
+                    const kx = useW / iw, ky = useH / ih;
+                    try {
+                        c.drawImage(
+                            useSrc,
+                            ix0 * kx, iy0 * ky, (ix1 - ix0) * kx, (iy1 - iy0) * ky,
+                            tx + ix0 * scale, ty + iy0 * scale,
+                            (ix1 - ix0) * scale, (iy1 - iy0) * scale
+                        );
+                    } catch (e) { /* taint и прочее — кадр просто без картинки */ }
+                }
             }
             if (pixelGrid) drawPixelGrid(c, iw, ih);
+            }
         }
         for (let i = 0; i < annotations.length; i++) {
             drawShape(c, annotations[i], scale, tx, ty);
@@ -3111,24 +3286,44 @@
             }
         }
 
-        let data = null;
-        try {
-            const c = document.createElement('canvas');
-            c.width = PALETTE_SAMPLE;
-            c.height = PALETTE_SAMPLE;
-            const x = c.getContext('2d');
-            if (!x) return;
-            x.imageSmoothingEnabled = true;
-            if (x.imageSmoothingQuality) x.imageSmoothingQuality = 'high';
-            // «contain» — чтобы не растянуть пропорции, но выборка всё равно
-            // покрывает картинку целиком
-            x.fillStyle = '#000';
-            x.drawImage(pixelSource(), 0, 0, PALETTE_SAMPLE, PALETTE_SAMPLE);
-            data = x.getImageData(0, 0, PALETTE_SAMPLE, PALETTE_SAMPLE).data;
-        } catch (e) {
-            imagePalette = [];   // tainted canvas: палитры не будет
-            return;
-        }
+        // Замерено: один drawImage 8000×6000 -> 256 px держал главный поток
+        // ~380 мс, и вкладка на это время замирала. Уменьшаем полосами в
+        // простое — суммарно те же миллисекунды, но без блокировки.
+        const sw = src.naturalWidth || src.width || PALETTE_SAMPLE;
+        const sh = src.naturalHeight || src.height || PALETTE_SAMPLE;
+        const MID = 256;
+
+        const finish = (feed) => {
+            let data = null;
+            try {
+                const c = document.createElement('canvas');
+                c.width = PALETTE_SAMPLE;
+                c.height = PALETTE_SAMPLE;
+                const x = c.getContext('2d');
+                if (!x) return;
+                x.imageSmoothingEnabled = true;
+                if (x.imageSmoothingQuality) x.imageSmoothingQuality = 'low';
+                x.fillStyle = '#000';
+                x.drawImage(feed, 0, 0, PALETTE_SAMPLE, PALETTE_SAMPLE);
+                data = x.getImageData(0, 0, PALETTE_SAMPLE, PALETTE_SAMPLE).data;
+            } catch (e) {
+                imagePalette = [];   // tainted canvas: палитры не будет
+                return;
+            }
+            tallyPalette(data);
+        };
+
+        if (Math.max(sw, sh) <= MID) { finish(src); return; }
+        const k = MID / Math.max(sw, sh);
+        bandDownscale(src, sw, sh,
+            Math.max(1, Math.round(sw * k)), Math.max(1, Math.round(sh * k)),
+            (cv) => { if (win) finish(cv); },
+            () => { imagePalette = []; });
+    }
+
+    // Квантование готовой выборки в 5–8 различимых цветов.
+    function tallyPalette(data) {
+        if (!data) { imagePalette = []; return; }
 
         // грубые бины: 4 бита на канал
         const bins = new Map();
@@ -4050,7 +4245,11 @@
             c.width = 1;
             c.height = 1;
             const x = c.getContext('2d');
-            x.drawImage(sourceEl(), 0, 0, 1, 1);
+            // 1×1 из 48 Мпикс — это всё равно полный проход по пикселям
+            // (замерено: сотни мс). Если уменьшенная копия уже готова,
+            // проверяем на ней: «отравленность» у них одинаковая.
+            const probe = (hugeSource && !perspCanvas) ? hugeSource : sourceEl();
+            x.drawImage(probe, 0, 0, 1, 1);
             x.getImageData(0, 0, 1, 1);
             canExport = true;
         } catch (e) {
