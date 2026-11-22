@@ -4,7 +4,7 @@
 > Pan, zoom, resize the window, and annotate images with drawing tools — pencil, line, arrow,
 > rectangle, ellipse and text — then copy or save the merged result.
 >
-> **Author:** diple_df x claude · **Version:** 3.6.1
+> **Author:** diple_df x claude · **Version:** 3.7.0
 
 <img width="1920" height="1002" alt="image" src="https://github.com/user-attachments/assets/b0d8290d-10ed-4e5c-9b46-43765eacfb5a" />
 
@@ -52,6 +52,21 @@ Navigate to any website with images. Hover over an image and press **Ctrl twice*
 5. **Drag** the title bar to reposition the window
 6. **Resize** the window from the bottom-right corner
 7. Press **Ctrl** twice again, press **Esc**, or click outside the window to close it
+
+### What counts as an image
+
+The window opens only on something that is actually worth magnifying. A press over
+empty page area does nothing, and it never grabs a picture from elsewhere on the page.
+
+| Target under the cursor | Result |
+|---|---|
+| Photo, screenshot, picture element, canvas | opens |
+| Element with a `background-image` | opens |
+| Link or card wrapping exactly one image that fills it | opens |
+| 1×1 tracking pixel, spacer, invisible image | ignored |
+| Icon or thumbnail under 24 px | ignored |
+| Card, list or container full of other content | ignored |
+| Plain text, empty background, page margins | ignored |
 
 ---
 
@@ -163,8 +178,8 @@ only respond while the pointer is over the magnifier window.
 
 | File | Script Name | Version | Status |
 |---|---|---|---|
-| `imgMagnifier.user.js` | Image Magnifier | 3.6.1 | Current — installable |
-| `imgMagnifier.js` | Image Magnifier | 3.6.1 | Legacy mirror, identical code |
+| `imgMagnifier.user.js` | Image Magnifier | 3.7.0 | Current — installable |
+| `imgMagnifier.js` | Image Magnifier | 3.7.0 | Legacy mirror, identical code |
 
 > Only the `.user.js` file is referenced by `@downloadURL`/`@updateURL`.
 

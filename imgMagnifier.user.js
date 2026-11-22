@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Image Magnifier
 // @namespace    https://github.com/diple-df/Image-Magnifier
-// @version      3.6.1
+// @version      3.7.0
 // @description  Двойной Ctrl по изображению открывает его в плавающем окне: зум 5–2000% с привязкой к курсору, панорамирование, инструменты рисования (карандаш, линия, стрелка, прямоугольник, эллипс, текст), отмена/повтор, копирование (Ctrl+C) и сохранение PNG (Ctrl+S) с объединёнными слоями, поддержка касаний
 // @author       diple_df x claude
 // @match        *://*/*
@@ -28,6 +28,8 @@
     const HISTORY_LIMIT = 80;      // кадров undo/redo
     const DPR_MAX = 3;             // потолок devicePixelRatio для холста
     const WIN_ID = 'img-mag-window';
+    const MIN_TARGET_PX = 24;      // меньше — иконка, пиксель трекинга, спейсер
+    const MAX_CONTAINER_RATIO = 0.45; // доля вьюпорта, выше которой это «страница»
 
     // --- Безопасное хранилище (localStorage может бросать) ----------------
     const memStore = Object.create(null);
@@ -151,6 +153,9 @@
         if (!el || !el.tagName) return null;
 
         if (el.tagName === 'IMG') {
+            // Трекинг-пиксели 1×1 и иконки — не то, что пользователь
+            // хочет увеличить, даже если курсор случайно на них попал.
+            if (!isImageLike(el)) return null;
             const u = bestFromImg(el);
             return u ? { url: u, caption: el.alt || el.title || '' } : null;
         }
@@ -160,16 +165,75 @@
             if (u) return { url: u, caption: el.getAttribute('aria-label') || el.title || '' };
         }
 
+        // Контейнер отдаём как картинку, только если он и есть картинка.
+        // Без этой проверки elementsFromPoint всегда доходит до BODY, и
+        // двойной Ctrl по пустому месту открывал первую картинку страницы.
+        if (!isImageLike(el)) return null;
+
         const innerImg = el.querySelector && el.querySelector('img');
-        if (innerImg) {
-            const u = bestFromImg(innerImg);
-            if (u) return { url: u, caption: innerImg.alt || innerImg.title || '' };
+        if (innerImg && isImageLike(innerImg)) {
+            // Внутренняя картинка должна занимать почти весь контейнер.
+            // Иначе это карточка/строка, где изображение — лишь часть,
+            // и клик по пустому месту не должен её открывать.
+            let covered = false;
+            try {
+                const cr = el.getBoundingClientRect();
+                const ir = innerImg.getBoundingClientRect();
+                covered = ir.width >= cr.width * 0.8 && ir.height >= cr.height * 0.8;
+            } catch (e) { covered = false; }
+            if (covered) {
+                const u = bestFromImg(innerImg);
+                if (u) return { url: u, caption: innerImg.alt || innerImg.title || '' };
+            }
         }
 
         const bg = bgImageUrl(el);
         if (bg) return { url: bg, caption: el.getAttribute('aria-label') || el.title || '' };
 
         return null;
+    }
+
+    // Может ли этот элемент считаться «картинкой под курсором».
+    // Отсекает то, что даёт ложные срабатывания: прозрачные трекинг-пиксели,
+    // иконки в 12 px, невидимые изображения и контейнеры размером во всю
+    // страницу (у них querySelector('img') находит всё, что угодно).
+    function isImageLike(el) {
+        if (!el || !el.getBoundingClientRect) return false;
+
+        const tag = el.tagName;
+        const isMedia = tag === 'IMG' || tag === 'CANVAS' || tag === 'PICTURE' ||
+            tag === 'SVG' || tag === 'VIDEO';
+        const isAncestor = tag === 'A' || tag === 'FIGURE' || tag === 'PICTURE' ||
+            tag === 'DIV' || tag === 'SPAN' || tag === 'LI' || tag === 'P';
+
+        let rect;
+        try { rect = el.getBoundingClientRect(); } catch (e) { return false; }
+        if (!rect || rect.width < MIN_TARGET_PX || rect.height < MIN_TARGET_PX) return false;
+
+        // Контейнер во весь экран — это страница, а не картинка. Саму медиа
+        // не проверяем: большое фото вполне может занимать весь вьюпорт.
+        if (!isMedia) {
+            const vw = innerWidth || 1, vh = innerHeight || 1;
+            if (rect.width > vw * MAX_CONTAINER_RATIO && rect.height > vh * MAX_CONTAINER_RATIO) {
+                return false;
+            }
+        }
+
+        let cs;
+        try { cs = getComputedStyle(el); } catch (e) { return isMedia; }
+        if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+        if (parseFloat(cs.opacity) === 0) return false;
+
+        if (isMedia) return true;
+        if (!isAncestor) return false;
+
+        // Для обёрток: внутри должно быть ровно одно изображение и должен
+        // быть картинкой сам элемент — своё фоновое изображение или
+        // единственный потомок-медиа. Иначе это карточка со списком.
+        if (bgImageUrl(el)) return true;
+        if (!el.querySelectorAll) return false;
+        const imgs = el.querySelectorAll('img, canvas, svg, video');
+        return imgs.length === 1;
     }
 
     function urlFromCanvas(c) {
