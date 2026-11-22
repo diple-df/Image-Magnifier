@@ -1,11 +1,17 @@
 // ==UserScript==
 // @name         Image Magnifier
 // @namespace    https://github.com/diple-df/Image-Magnifier
-// @version      3.7.0
-// @description  Двойной Ctrl по изображению открывает его в плавающем окне: зум 5–2000% с привязкой к курсору, панорамирование, инструменты рисования (карандаш, линия, стрелка, прямоугольник, эллипс, текст), отмена/повтор, копирование (Ctrl+C) и сохранение PNG (Ctrl+S) с объединёнными слоями, поддержка касаний
+// @version      3.8.0
+// @description  Двойной Ctrl по изображению открывает его в плавающем окне: зум 5–2000% с привязкой к курсору, панорамирование, инструменты рисования (карандаш, линия, стрелка, прямоугольник, эллипс, текст), палитра изображения, перспективная коррекция, чтение текста и QR, экспорт PNG/JPEG/WebP, отмена/повтор, полностью клавиатурный режим, копирование (Ctrl+C) и сохранение (Ctrl+S)
 // @author       diple_df x claude
 // @match        *://*/*
 // @run-at       document-start
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_xmlhttpRequest
+// @connect      raw.githubusercontent.com
+// @connect      github.com
 // @downloadURL  https://raw.githubusercontent.com/diple-df/Image-Magnifier/main/imgMagnifier.user.js
 // @updateURL    https://raw.githubusercontent.com/diple-df/Image-Magnifier/main/imgMagnifier.user.js
 // @noframes     false
@@ -30,6 +36,20 @@
     const WIN_ID = 'img-mag-window';
     const MIN_TARGET_PX = 24;      // меньше — иконка, пиксель трекинга, спейсер
     const MAX_CONTAINER_RATIO = 0.45; // доля вьюпорта, выше которой это «страница»
+
+    const PALETTE_SAMPLE = 64;     // сторона уменьшенной копии для палитры
+    const PALETTE_MAX = 8;         // максимум плашек палитры
+    const PALETTE_MIN_DIST = 26;   // мин. расстояние между цветами палитры (RGB)
+    const QUICK_PINS = 5;          // закреплённые быстрые цвета
+    const QUICK_RECENT = 4;        // последние использованные цвета
+    const PIXEL_GRID_FROM = 8;     // сетка пикселей с 800%
+    const WARP_MAX_SIDE = 4000;    // предел стороны выпрямленной картинки
+    const WARP_MAX_PIXELS = 12 * 1000 * 1000; // предел площади выборки
+    const SCAN_MAX_SIDE = 1600;    // предел выборки для OCR/QR
+    const OCR_SCALE = 4;           // увеличение фолбэка «скопировать картинку»
+    const CACHE_MAX_ENTRIES = 3;   // «тёплые» состояния зум/панорама
+    const CACHE_MAX_BYTES = 24 * 1024 * 1024; // предел памяти кэша
+    const HIT_TOLERANCE = 6;       // допуск хит-теста аннотаций (экранные px)
 
     // --- Безопасное хранилище (localStorage может бросать) ----------------
     const memStore = Object.create(null);
@@ -63,6 +83,210 @@
     }
 
     const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+    // --- Автообновление ----------------------------------------------------
+    // Пассивный слой — @updateURL/@downloadURL в шапке: менеджер сам сверяет
+    // версию. Здесь активный: ежедневная фоновая проверка после загрузки
+    // страницы и пункт меню «Проверить обновления». Скрипт висит на *://*/*,
+    // поэтому проверка почти бесплатна: на старте читается один timestamp,
+    // сеть трогается не чаще раза в сутки.
+    const UPDATE = (function () {
+        const RAW = 'https://raw.githubusercontent.com/diple-df/Image-Magnifier/main/imgMagnifier.user.js';
+        const PAGE = 'https://github.com/diple-df/Image-Magnifier';
+        const STAMP_KEY = 'img_mag_upd_ts';
+        const SEEN_KEY = 'img_mag_upd_seen';
+        const DAY = 86400000;
+        const LOCAL_VERSION = '3.8.0';
+
+        function curVer() {
+            try {
+                if (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) {
+                    return String(GM_info.script.version);
+                }
+            } catch (e) { /* ignore */ }
+            return LOCAL_VERSION;
+        }
+
+        // Сравнение по числовым сегментам: 3.10.0 больше 3.9.0 (строкой — нет).
+        function cmp(a, b) {
+            const pa = String(a || '').split(/[.\-+]/);
+            const pb = String(b || '').split(/[.\-+]/);
+            const n = Math.max(pa.length, pb.length);
+            for (let i = 0; i < n; i++) {
+                const x = parseInt(pa[i], 10) || 0;
+                const y = parseInt(pb[i], 10) || 0;
+                if (x !== y) return x > y ? 1 : -1;
+            }
+            return 0;
+        }
+
+        function gmGet(key, def) {
+            try {
+                if (typeof GM_getValue === 'function') return GM_getValue(key, def);
+            } catch (e) { /* ignore */ }
+            return storeGet(key) === null ? def : storeGet(key);
+        }
+
+        function gmSet(key, val) {
+            try {
+                if (typeof GM_setValue === 'function') { GM_setValue(key, val); return; }
+            } catch (e) { /* ignore */ }
+            try { storeSet(key, val); } catch (e2) { /* ignore */ }
+        }
+
+        function fetchText(url, cb) {
+            let done = false;
+            const finish = (txt) => {
+                if (done) return;
+                done = true;
+                try { cb(txt || null); } catch (e) { /* тихий сбой */ }
+            };
+            try {
+                if (typeof GM_xmlhttpRequest === 'function') {
+                    GM_xmlhttpRequest({
+                        method: 'GET',
+                        url: url,
+                        timeout: 15000,
+                        onload: (r) => finish(r && r.status === 200 ? r.responseText : null),
+                        onerror: () => finish(null),
+                        ontimeout: () => finish(null),
+                        onabort: () => finish(null),
+                    });
+                    return;
+                }
+            } catch (e) { /* падаем в fetch */ }
+            try {
+                fetch(url, { cache: 'no-store' })
+                    .then((r) => (r && r.ok ? r.text() : null))
+                    .then(finish)
+                    .catch(() => finish(null));
+            } catch (e) { finish(null); }
+        }
+
+        // Общий тост-баннер в стиле окна лупы. Только DOM API, без innerHTML.
+        function notice(children, autoHideMs) {
+            const box = document.createElement('div');
+            box.id = 'img-mag-update-note';
+            box.setAttribute('role', 'status');
+            Object.assign(box.style, {
+                position: 'fixed', zIndex: '2147483647', right: '16px', bottom: '16px',
+                maxWidth: '340px', padding: '11px 13px', borderRadius: '10px',
+                background: '#1e1e1e', color: '#f2f3f6',
+                border: '1px solid rgba(255,255,255,0.14)',
+                boxShadow: '0 12px 32px -8px rgba(0,0,0,0.65)',
+                font: '13px/1.45 sans-serif', display: 'flex', gap: '10px',
+                alignItems: 'flex-start', boxSizing: 'border-box',
+            });
+
+            const txt = document.createElement('div');
+            txt.style.flex = '1 1 auto';
+            for (let i = 0; i < children.length; i++) txt.appendChild(children[i]);
+
+            const close = document.createElement('button');
+            close.type = 'button';
+            close.textContent = '✕';
+            close.setAttribute('aria-label', 'Закрыть уведомление');
+            Object.assign(close.style, {
+                appearance: 'none', border: '0', background: 'none', color: '#8b90a0',
+                font: 'inherit', cursor: 'pointer', padding: '0 0 0 4px', lineHeight: '1',
+            });
+            close.addEventListener('click', () => { try { box.remove(); } catch (e) { /* ignore */ } });
+
+            box.append(txt, close);
+            rootEl().appendChild(box);
+            if (autoHideMs) {
+                setTimeout(() => { try { box.remove(); } catch (e) { /* ignore */ } }, autoHideMs);
+            }
+            return box;
+        }
+
+        function textNode(text) {
+            const d = document.createElement('span');
+            d.textContent = text;
+            return d;
+        }
+
+        function banner(version) {
+            if (document.getElementById('img-mag-update-note')) return;
+            const link = document.createElement('a');
+            link.href = RAW;
+            link.textContent = 'Обновить';
+            link.rel = 'noopener noreferrer';
+            Object.assign(link.style, {
+                color: '#6cb6ff', textDecoration: 'underline', cursor: 'pointer',
+            });
+            notice([
+                textNode('Image Magnifier ' + version + ' доступна. '),
+                link,
+            ], 0);
+            gmSet(SEEN_KEY, version);
+        }
+
+        function msg(text) {
+            if (document.getElementById('img-mag-update-note')) {
+                const old = document.getElementById('img-mag-update-note');
+                try { old.remove(); } catch (e) { /* ignore */ }
+            }
+            notice([textNode(text)], 3600);
+        }
+
+        function check(opts) {
+            const manual = !!(opts && opts.manual);
+            // Пока открыто окно лупы, фоновую проверку не запускаем: она не
+            // должна мешать работе и не должна закрывать окно.
+            if (!manual && document.getElementById(WIN_ID)) return;
+            gmSet(STAMP_KEY, Date.now());
+            fetchText(RAW, (txt) => {
+                if (!txt) {
+                    if (manual) msg('Не удалось проверить обновления');
+                    return;
+                }
+                const m = txt.match(/^\/\/\s*@version\s+(.+)$/m);
+                const remote = m ? String(m[1]).trim() : '';
+                if (!remote) {
+                    if (manual) msg('Не удалось прочитать версию обновления');
+                    return;
+                }
+                const local = curVer();
+                if (cmp(remote, local) > 0) {
+                    const seen = gmGet(SEEN_KEY, null);
+                    // фоном — один раз на версию; вручную — всегда показываем
+                    if (manual || seen !== remote) banner(remote);
+                } else if (manual) {
+                    msg('Установлена последняя версия ' + local);
+                }
+            });
+        }
+
+        function maybeAuto() {
+            try {
+                const last = Number(gmGet(STAMP_KEY, 0)) || 0;
+                if (Date.now() - last < DAY) return;
+            } catch (e) { return; }
+            const run = () => { try { check({ manual: false }); } catch (e) { /* ignore */ } };
+            try {
+                if ('requestIdleCallback' in window) requestIdleCallback(run, { timeout: 5000 });
+                else setTimeout(run, 2500);
+            } catch (e) {
+                setTimeout(run, 2500);
+            }
+        }
+
+        return { check: check, maybeAuto: maybeAuto, cmp: cmp, curVer: curVer, PAGE: PAGE };
+    })();
+
+    if (typeof GM_registerMenuCommand === 'function') {
+        try {
+            GM_registerMenuCommand('Image Magnifier: Проверить обновления', function () {
+                UPDATE.check({ manual: true });
+            });
+        } catch (e) { /* ignore */ }
+    }
+
+    try {
+        if (document.readyState === 'complete') UPDATE.maybeAuto();
+        else window.addEventListener('load', UPDATE.maybeAuto, { once: true, passive: true });
+    } catch (e) { /* ignore */ }
 
     // --- Отслеживание позиции курсора ------------------------------------
     let mx = 0, my = 0;
@@ -328,7 +552,17 @@
         copy:    [['rect', { x: 9, y: 9, width: 11, height: 11, rx: 2 }], ['path', { d: 'M5 15V5a1 1 0 0 1 1-1h9' }]],
         save:    [['path', { d: 'M12 4v10' }], ['path', { d: 'M7 10l5 5 5-5' }], ['path', { d: 'M4 20h16' }]],
         help:    [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'M9.6 9.2a2.5 2.5 0 1 1 3.7 2.2c-.8.5-1.3 1.1-1.3 2v.3' }], ['path', { d: 'M12 17.4v.2' }]],
-        close:   [['path', { d: 'M6 6l12 12M18 6L6 18' }]]
+        close:   [['path', { d: 'M6 6l12 12M18 6L6 18' }]],
+
+        // 3.8.0
+        palette: [['circle', { cx: 8.5, cy: 12, r: 2 }], ['circle', { cx: 12, cy: 7.5, r: 2 }], ['circle', { cx: 15.5, cy: 12, r: 2 }], ['path', { d: 'M12 3.2a8.8 8.8 0 1 0 0 17.6 3 3 0 0 0 2.2-5 2 2 0 0 1 1.5-3.3h1.7A3.4 3.4 0 0 0 21 9.1 8.8 8.8 0 0 0 12 3.2z' }]],
+        warp:    [['path', { d: 'M4 7l5-3 7 3 4-2' }], ['path', { d: 'M4 7v10l5 3 7-3 4 2V9' }], ['path', { d: 'M9 4v10' }], ['path', { d: 'M16 7v10' }]],
+        scan:    [['path', { d: 'M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8' }], ['path', { d: 'M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8' }], ['path', { d: 'M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16' }], ['path', { d: 'M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16' }], ['path', { d: 'M7.5 12h9' }]],
+        qr:      [['rect', { x: 4, y: 4, width: 6, height: 6, rx: 1 }], ['rect', { x: 14, y: 4, width: 6, height: 6, rx: 1 }], ['rect', { x: 4, y: 14, width: 6, height: 6, rx: 1 }], ['path', { d: 'M14 14h2v2h-2zM18 14h2v2h-2zM14 18h2v2h-2zM18 18h2v2h-2z' }]],
+        pin:     [['path', { d: 'M9 4h6l-1 5 3 3H7l3-3z' }], ['path', { d: 'M12 12v8' }]],
+        export:  [['path', { d: 'M12 15V4' }], ['path', { d: 'M8 8l4-4 4 4' }], ['path', { d: 'M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3' }]],
+        grid:    [['rect', { x: 4, y: 4, width: 16, height: 16, rx: 1 }], ['path', { d: 'M12 4v16M4 12h16' }], ['path', { d: 'M8 4v16M16 4v16M4 8h16M4 16h16', opacity: 0.55 }]],
+        more:    [['circle', { cx: 6, cy: 12, r: 1.4 }], ['circle', { cx: 12, cy: 12, r: 1.4 }], ['circle', { cx: 18, cy: 12, r: 1.4 }]]
     };
 
     function makeIcon(spec) {
@@ -366,6 +600,8 @@
     let textInput = null;
     let zoomLabel = null;
     let undoBtn = null, redoBtn = null, fillBtn = null;
+    let pinBtn = null, analysisBtn = null, exportBtn = null, moreBtn = null;
+    let quickPaletteEl = null;
     let toolButtons = {};
     let imageUrl = '';
 
@@ -395,10 +631,128 @@
     let corsImage = null;
     let corsTried = false;
 
+    // --- Состояние новых возможностей (3.8.0) ------------------------------
+    let perspCanvas = null;      // выпрямленная копия картинки (1.5)
+    let perspCorners = [];       // выбранные углы в координатах картинки
+    let perspPicking = false;    // идёт выбор четырёх углов
+    let perspBusy = false;
+    let scanRect = null;         // выделение области для распознавания
+    let scanPick = false;        // ждём выделения области
+    let selShape = null;         // выбранная аннотация (4.2)
+    let dragShape = null;        // { shape, ox, oy, moved }
+    let lastShape = null;        // последняя добавленная фигура
+    let imagePalette = [];       // доминирующие цвета (1.4)
+    let quickRecent = [];        // последние использованные цвета (4.3)
+    let quickPins = [];          // закреплённые быстрые цвета (4.3)
+    let colorInputEl = null;     // <input type=color>
+    let pinned = false;          // окно не закрывается от клика мимо (5.3)
+    let ghostMode = false;       // «только смотреть»: клики сквозь картинку
+    let translucent = false;     // полупрозрачное окно
+    let exportFormat = 'png';    // 'png' | 'jpeg' | 'webp' (3.5)
+    let exportQuality = 0.92;
+    let pixelGrid = false;       // сетка пикселей при ≥800% (9.3)
+    let pyramid = null;          // уровни 1/2, 1/4, 1/8 (6.1)
+    let pyramidLevel = 0;
+    let baseRev = 0;             // растёт при смене аннотаций/источника
+    const baseCache = [];        // LRU «тёплых» состояний (6.2)
+    let mqDpr = null;            // matchMedia для смены монитора (6.3)
+    let dprPoll = 0;             // страховочный опрос DPR
+    let menuEl = null;           // открытое всплывающее меню
+    let menuAnchorBtn = null;
+    let liveEl = null;           // aria-live для тостов (4.1)
+    let focusables = [];         // элементы окна для Tab-ловушки
+
     const s2i = (x, y) => ({ x: (x - tx) / scale, y: (y - ty) / scale }); // экран → картинка
 
-    function imageW() { return (imgEl && (imgEl.naturalWidth || imgEl.width)) || 0; }
-    function imageH() { return (imgEl && (imgEl.naturalHeight || imgEl.height)) || 0; }
+    function sourceEl() { return perspCanvas || imgEl; }
+
+    function imageW() {
+        if (perspCanvas) return perspCanvas.width;
+        return (imgEl && (imgEl.naturalWidth || imgEl.width)) || 0;
+    }
+    function imageH() {
+        if (perspCanvas) return perspCanvas.height;
+        return (imgEl && (imgEl.naturalHeight || imgEl.height)) || 0;
+    }
+
+    // --- Мелкие помощники ---------------------------------------------------
+    function mk(tag, styles, children) {
+        const el = document.createElement(tag);
+        if (styles) Object.assign(el.style, styles);
+        if (children) {
+            for (let i = 0; i < children.length; i++) {
+                if (children[i]) el.appendChild(children[i]);
+            }
+        }
+        return el;
+    }
+
+    function hexToRgb(hex) {
+        const m = /^#?([a-f0-9]{3}|[a-f0-9]{6})$/i.exec(String(hex || '').trim());
+        if (!m) return null;
+        let h = m[1];
+        if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+        return {
+            r: parseInt(h.slice(0, 2), 16),
+            g: parseInt(h.slice(2, 4), 16),
+            b: parseInt(h.slice(4, 6), 16),
+        };
+    }
+
+    function rgbToHex(r, g, b) {
+        const p = (v) => clamp(Math.round(v), 0, 255).toString(16).padStart(2, '0');
+        return '#' + p(r) + p(g) + p(b);
+    }
+
+    function rgbDist(a, b) {
+        const dr = a.r - b.r, dg = a.g - b.g, db = a.b - b.b;
+        return Math.sqrt(dr * dr + dg * dg + db * db);
+    }
+
+    // Копирование текста: clipboard API, иначе скрытый textarea.
+    function copyText(text, okMsg) {
+        const done = () => announce(okMsg || 'Скопировано');
+        const fallback = () => {
+            let ok = false;
+            try {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.setAttribute('readonly', '');
+                Object.assign(ta.style, {
+                    position: 'fixed', left: '-9999px', top: '0', opacity: '0',
+                });
+                rootEl().appendChild(ta);
+                ta.select();
+                ok = document.execCommand('copy');
+                ta.remove();
+            } catch (e) { ok = false; }
+            if (ok) done();
+            else toast('Не удалось скопировать в буфер');
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(fallback);
+        } else {
+            fallback();
+        }
+    }
+
+    // Озвучивание для экранного диктора и видимая плашка (4.1)
+    function announce(msg) {
+        toast(msg);
+        if (!liveEl) {
+            liveEl = mk('div', {
+                position: 'absolute', width: '1px', height: '1px', overflow: 'hidden',
+                clipPath: 'inset(50%)', whiteSpace: 'nowrap', opacity: '0',
+            });
+            liveEl.setAttribute('role', 'status');
+            liveEl.setAttribute('aria-live', 'polite');
+            liveEl.setAttribute('aria-atomic', 'true');
+        }
+        if (win && !liveEl.isConnected) win.appendChild(liveEl);
+        liveEl.textContent = '';
+        // повторная запись в тот же узел иногда не читается диктором
+        setTimeout(() => { if (liveEl) liveEl.textContent = msg; }, 60);
+    }
 
     function rootEl() { return document.body || document.documentElement; }
 
@@ -458,7 +812,332 @@
         return s;
     }
 
-    // --- Открытие окна ----------------------------------------------------
+    // Растяжка, прижимающая undo/redo/trash к правому краю полосы
+    function tbSpacer() {
+        const d = document.createElement('div');
+        Object.assign(d.style, { flex: '1 1 8px', minWidth: '0', height: '1px' });
+        return d;
+    }
+
+    // --- Всплывающие панели (меню и поповеры) ------------------------------
+    // Никакого innerHTML: только createElement/textContent.
+    function closeMenu() {
+        if (menuEl) {
+            try { menuEl.remove(); } catch (e) { /* ignore */ }
+            menuEl = null;
+        }
+        if (menuAnchorBtn) {
+            menuAnchorBtn.dataset.open = '';
+            setBtnActive(menuAnchorBtn, menuAnchorBtn.dataset.active === '1');
+            menuAnchorBtn.setAttribute('aria-expanded', 'false');
+            menuAnchorBtn = null;
+        }
+    }
+
+    function menuOpen() { return !!menuEl; }
+
+    function openPanel(anchorBtn, title, build, opts) {
+        if (!win) return null;
+        if (menuEl && menuAnchorBtn === anchorBtn) { closeMenu(); return null; }
+        closeMenu();
+
+        const O = opts || {};
+        const panel = document.createElement('div');
+        Object.assign(panel.style, {
+            position: 'absolute', zIndex: '9', minWidth: (O.minWidth || 190) + 'px',
+            maxWidth: 'min(340px, calc(100% - 12px))',
+            maxHeight: 'min(360px, calc(100% - 12px))', overflow: 'auto',
+            background: '#2b2b2b', color: '#eee', borderRadius: '8px',
+            boxShadow: '0 10px 28px rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.12)',
+            padding: '6px', boxSizing: 'border-box', font: '12.5px/1.4 sans-serif',
+        });
+        panel.setAttribute('role', 'menu');
+        panel.addEventListener('mousedown', (e) => e.stopPropagation());
+        panel.addEventListener('click', (e) => e.stopPropagation());
+
+        const head = document.createElement('div');
+        head.textContent = title || '';
+        Object.assign(head.style, {
+            padding: '2px 6px 6px', opacity: '0.65', fontSize: '11.5px',
+            textTransform: 'uppercase', letterSpacing: '0.04em',
+        });
+        if (title) panel.appendChild(head);
+
+        build(panel);
+
+        win.appendChild(panel);
+        menuEl = panel;
+        menuAnchorBtn = anchorBtn;
+        if (anchorBtn) {
+            anchorBtn.dataset.open = '1';
+            setBtnActive(anchorBtn, true);
+            anchorBtn.setAttribute('aria-expanded', 'true');
+        }
+
+        // ставим под кнопкой, но не выпускаем за окно
+        const l = clamp(anchorBtn ? anchorBtn.offsetLeft : 8, 6, Math.max(6, win.clientWidth - panel.offsetWidth - 6));
+        const t = (anchorBtn ? anchorBtn.offsetTop + anchorBtn.offsetHeight : 6) + 2;
+        panel.style.left = Math.round(l) + 'px';
+        panel.style.top = Math.round(t) + 'px';
+        panel.style.maxHeight = Math.max(80, Math.min(360, win.clientHeight - t - 8)) + 'px';
+        return panel;
+    }
+
+    // Пункт меню: { label, hint, check, disabled, onClick }
+    function menuItem(parent, it) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.setAttribute('role', 'menuitem');
+        Object.assign(b.style, {
+            display: 'flex', alignItems: 'center', gap: '8px', width: '100%',
+            background: 'transparent', color: '#eee', border: 'none', cursor: 'pointer',
+            padding: '6px 8px', borderRadius: '5px', textAlign: 'left', font: 'inherit',
+            outline: 'none', boxSizing: 'border-box',
+        });
+        if (it.icon && ICONS[it.icon]) b.appendChild(makeIcon(ICONS[it.icon]));
+
+        const label = document.createElement('span');
+        label.textContent = it.label;
+        Object.assign(label.style, { flex: '1 1 auto', minWidth: '0' });
+
+        const hint = document.createElement('span');
+        hint.textContent = it.hint || '';
+        Object.assign(hint.style, {
+            opacity: '0.55', fontSize: '11px', flex: '0 0 auto',
+            fontFamily: 'ui-monospace, monospace',
+        });
+
+        b.append(label, hint);
+        if (it.check) {
+            const tick = document.createElement('span');
+            tick.textContent = '✓';
+            Object.assign(tick.style, { color: '#6cb6ff', flex: '0 0 auto' });
+            b.appendChild(tick);
+        }
+        if (it.hint) b.setAttribute('aria-keyshortcuts', it.hint);
+
+        if (it.disabled) {
+            b.disabled = true;
+            b.style.opacity = '0.4';
+            b.style.cursor = 'default';
+            b.setAttribute('aria-disabled', 'true');
+        } else {
+            b.addEventListener('mouseenter', () => { b.style.background = 'rgba(255,255,255,0.12)'; });
+            b.addEventListener('mouseleave', () => { b.style.background = 'transparent'; });
+            b.addEventListener('click', () => {
+                closeMenu();
+                try { it.onClick(); } catch (e) { /* ignore */ }
+            });
+        }
+        parent.appendChild(b);
+        return b;
+    }
+
+    function menuSep(parent) {
+        parent.appendChild(mk('div', {
+            height: '1px', background: 'rgba(255,255,255,0.12)', margin: '5px 4px',
+        }));
+    }
+
+    function menuNote(parent, text) {
+        const d = mk('div', { padding: '4px 8px 6px', opacity: '0.6', fontSize: '11.5px' }, null);
+        d.textContent = text;
+        parent.appendChild(d);
+        return d;
+    }
+
+    // --- Быстрые цвета (4.3) ------------------------------------------------
+    const DEFAULT_PINS = ['#ff3b30', '#ffcc00', '#34c759', '#4da3ff', '#ffffff'];
+
+    function readQuickColors() {
+        let pins = DEFAULT_PINS.slice();
+        try {
+            const raw = storeGet('img_mag_pins');
+            if (raw) {
+                const arr = JSON.parse(raw);
+                if (Array.isArray(arr)) {
+                    const clean = arr.filter((c) => hexToRgb(c)).map((c) => String(c).toLowerCase());
+                    if (clean.length) pins = clean.slice(0, QUICK_PINS);
+                }
+            }
+        } catch (e) { /* ignore */ }
+        let rec = [];
+        try {
+            const raw = storeGet('img_mag_recent');
+            if (raw) {
+                const arr = JSON.parse(raw);
+                if (Array.isArray(arr)) {
+                    rec = arr.filter((c) => hexToRgb(c)).map((c) => String(c).toLowerCase());
+                }
+            }
+        } catch (e) { /* ignore */ }
+        quickPins = pins;
+        quickRecent = rec.slice(0, QUICK_RECENT);
+    }
+
+    function saveQuickColors() {
+        try { storeSet('img_mag_pins', JSON.stringify(quickPins.slice(0, QUICK_PINS))); } catch (e) { /* ignore */ }
+        try { storeSet('img_mag_recent', JSON.stringify(quickRecent.slice(0, QUICK_RECENT))); } catch (e) { /* ignore */ }
+    }
+
+    function setPenColor(hex, quiet) {
+        const rgb = hexToRgb(hex);
+        if (!rgb) return;
+        penColor = rgbToHex(rgb.r, rgb.g, rgb.b).toLowerCase();
+        storeSet('img_mag_color', penColor);
+        if (colorInputEl) colorInputEl.value = penColor;
+        if (textInput) {
+            textInput.style.color = penColor;
+            textInput.style.caretColor = penColor;
+            textInput.style.boxShadow = '0 0 0 1px ' + penColor + ', 0 1px 6px rgba(0,0,0,0.5)';
+        }
+        pushRecentColor(penColor);
+        if (quickPaletteEl) refreshQuickPalette();
+        if (!quiet) {
+            /* цвет уже применён; перерисовка не нужна до следующего штриха */
+        }
+    }
+
+    function pushRecentColor(hex) {
+        const c = String(hex || '').toLowerCase();
+        if (!hexToRgb(c)) return;
+        const next = [c];
+        for (let i = 0; i < quickRecent.length; i++) {
+            if (quickRecent[i] !== c) next.push(quickRecent[i]);
+        }
+        quickRecent = next.slice(0, QUICK_RECENT);
+        saveQuickColors();
+    }
+
+    function swatchButton(hex, tip, onClick, size) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        const s = size || 16;
+        Object.assign(b.style, {
+            width: s + 'px', height: s + 'px', padding: '0', flex: '0 0 auto',
+            background: hex, border: '1px solid rgba(0,0,0,0.55)',
+            boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.22)',
+            borderRadius: '3px', cursor: 'pointer', outline: 'none',
+        });
+        b.title = tip;
+        b.setAttribute('aria-label', tip);
+        b.addEventListener('click', (e) => { e.stopPropagation(); onClick(hex, b); });
+        b.addEventListener('focus', () => { b.style.outline = '2px solid #4da3ff'; b.style.outlineOffset = '1px'; });
+        b.addEventListener('blur', () => { b.style.outline = 'none'; });
+        b.addEventListener('mousedown', (e) => e.stopPropagation());
+        return b;
+    }
+
+    // 5 закреплённых цветов + последние использованные, одним кликом
+    function buildQuickPalette() {
+        const wrap = document.createElement('div');
+        Object.assign(wrap.style, {
+            display: 'flex', alignItems: 'center', gap: '3px', flex: '0 0 auto',
+            padding: '0 1px',
+        });
+        wrap.setAttribute('role', 'group');
+        wrap.setAttribute('aria-label', 'Быстрые цвета');
+        refreshQuickPalette(wrap);
+        return wrap;
+    }
+
+    function refreshQuickPalette(wrap) {
+        const el = wrap || quickPaletteEl;
+        if (!el) return;
+        while (el.firstChild) el.removeChild(el.firstChild);
+        quickPins.forEach((c) => {
+            el.appendChild(swatchButton(c, 'Цвет ' + c.toUpperCase() + ' (клик — выбрать)', (hex) => {
+                setPenColor(hex);
+                announce('Цвет ' + hex.toUpperCase());
+            }));
+        });
+        quickRecent.forEach((c) => {
+            if (quickPins.indexOf(c) !== -1) return;
+            const b = swatchButton(c, 'Недавний ' + c.toUpperCase(), (hex) => {
+                setPenColor(hex);
+                announce('Цвет ' + hex.toUpperCase());
+            }, 13);
+            b.style.borderRadius = '50%';
+            el.appendChild(b);
+        });
+    }
+
+    // --- Закрепление и прозрачность (5.3) ----------------------------------
+    function applyWindowLook() {
+        if (!win) return;
+        win.style.opacity = translucent ? '0.82' : '1';
+        win.style.pointerEvents = '';
+        if (viewEl) {
+            viewEl.style.pointerEvents = ghostMode ? 'none' : '';
+            viewEl.style.cursor = ghostMode ? 'default' : (currentTool === 'move' ? 'grab' : 'crosshair');
+        }
+        if (pinBtn) {
+            setBtnActive(pinBtn, pinned);
+            pinBtn.title = (pinned ? 'Открепить' : 'Закрепить') + ' окно (Shift+P)';
+            pinBtn.setAttribute('aria-label', pinBtn.title);
+            pinBtn.setAttribute('aria-pressed', pinned ? 'true' : 'false');
+        }
+        win.setAttribute('data-pinned', pinned ? '1' : '0');
+    }
+
+    function togglePin(force) {
+        const next = (force === undefined) ? !pinned : !!force;
+        pinned = next;
+        storeSet('img_mag_pin', pinned ? '1' : '0');
+        applyWindowLook();
+        announce(pinned ? 'Окно закреплено — клик мимо не закрывает' : 'Окно откреплено');
+    }
+
+    function toggleGhost(force) {
+        const next = (force === undefined) ? !ghostMode : !!force;
+        ghostMode = next;
+        applyWindowLook();
+        announce(ghostMode ? 'Режим «только смотреть»: клики проходят сквозь картинку' : 'Обычный режим');
+    }
+
+    function toggleTranslucent(force) {
+        const next = (force === undefined) ? !translucent : !!force;
+        translucent = next;
+        storeSet('img_mag_translucent', translucent ? '1' : '0');
+        applyWindowLook();
+        announce(translucent ? 'Полупрозрачное окно' : 'Обычная прозрачность');
+    }
+
+    // --- Фокус-ловушка (4.1) -----------------------------------------------
+    function collectFocusables() {
+        const out = [];
+        if (!win) return out;
+        const nodes = win.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+        for (let i = 0; i < nodes.length; i++) {
+            const el = nodes[i];
+            if (el.disabled) continue;
+            if (el.dataset && el.dataset.disabled === '1') continue;
+            let r;
+            try { r = el.getBoundingClientRect(); } catch (e) { continue; }
+            if (!r || (!r.width && !r.height)) continue;
+            if (el === zoomLabel || el.tagName === 'INPUT' || el.tagName === 'SELECT' ||
+                el.tagName === 'TEXTAREA' || el.tabIndex >= 0) {
+                out.push(el);
+            }
+        }
+        return out;
+    }
+
+    // Tab ходит только по окну и никогда не уходит на страницу.
+    function trapFocus(e) {
+        const list = collectFocusables();
+        if (!list.length) { e.preventDefault(); return; }
+        const active = document.activeElement;
+        let idx = list.indexOf(active);
+        if (idx === -1) idx = e.shiftKey ? 0 : -1;
+        const dir = e.shiftKey ? -1 : 1;
+        let next = idx + dir;
+        if (next < 0) next = list.length - 1;
+        if (next >= list.length) next = 0;
+        e.preventDefault();
+        try { list[next].focus({ preventScroll: true }); } catch (err) { /* ignore */ }
+    }
+
     function openWindow(url, caption) {
         if (win) closeWindow();
 
@@ -485,6 +1164,15 @@
         penColor = storeGet('img_mag_color') || '#ff3b30';
         penWidth = clamp(storeNum('img_mag_width', 4), 1, 40);
         fillShapes = storeGet('img_mag_fill') === '1';
+        pinned = storeGet('img_mag_pin') === '1';
+        ghostMode = false;
+        translucent = storeGet('img_mag_translucent') === '1';
+        pixelGrid = storeGet('img_mag_grid') === '1';
+        exportFormat = storeGet('img_mag_format') || 'png';
+        if (exportFormat !== 'png' && exportFormat !== 'jpeg' && exportFormat !== 'webp') exportFormat = 'png';
+        exportQuality = clamp(storeNum('img_mag_quality', 0.92), 0.3, 1);
+        readQuickColors();
+        resetPerFeatureState();
 
         // --- контейнер окна ---
         win = document.createElement('div');
@@ -542,22 +1230,34 @@
         const btnIn = iconButton('zoomIn', 'Приблизить', () => zoomCenter(ZOOM_STEP));
         const btnFit = iconButton('fit', 'По размеру окна (Ctrl+1)', () => fitImage());
         const btnCopy = iconButton('copy', 'Копировать изображение (Ctrl+C)', () => copyToClipboard());
-        const btnSave = iconButton('save', 'Сохранить PNG (Ctrl+S)', () => savePNG());
+        const btnSave = iconButton('save', 'Сохранить (Ctrl+S)', () => savePNG());
+        const btnPin = iconButton('pin', 'Закрепить окно (P)', () => togglePin());
         const btnHelp = iconButton('help', 'Горячие клавиши (?)', () => toggleHelp());
         const btnClose = iconButton('close', 'Закрыть (Esc)', () => closeWindow());
 
         // в узком окне управление сжимается, но не исчезает
-        [btnOut, btnIn, btnFit, btnCopy, btnSave, btnHelp, btnClose].forEach(compactButton);
+        [btnOut, btnIn, btnFit, btnCopy, btnSave, btnPin, btnHelp, btnClose].forEach(compactButton);
+        pinBtn = btnPin;
+        setBtnActive(btnPin, pinned);
 
-        barEl.append(title, zoomLabel, btnOut, btnIn, btnFit, btnCopy, btnSave, btnHelp, btnClose);
+        barEl.append(title, zoomLabel, btnOut, btnIn, btnFit, separator(), btnCopy, btnSave, btnPin, btnHelp, btnClose);
+        applyWindowLook();
 
         // --- панель инструментов ---
+        // Обёртка в две полосы: инструменты/цвета и действия. Так панель не
+        // превращается в стену из 20+ иконок и не прыгает при переносе.
+        const tbWrap = document.createElement('div');
+        Object.assign(tbWrap.style, {
+            flex: '0 0 auto', background: '#242424',
+            borderTop: '1px solid rgba(255,255,255,0.08)', userSelect: 'none',
+            boxSizing: 'border-box',
+        });
+
         const tb = document.createElement('div');
         Object.assign(tb.style, {
             display: 'flex', alignItems: 'center', gap: '3px', flexWrap: 'wrap',
-            flex: '0 0 auto', padding: '4px 8px', background: '#242424',
-            borderTop: '1px solid rgba(255,255,255,0.08)', userSelect: 'none',
-            boxSizing: 'border-box',
+            flex: '0 0 auto', padding: '4px 8px 2px', background: 'transparent',
+            userSelect: 'none', boxSizing: 'border-box',
         });
 
         toolButtons = {};
@@ -571,6 +1271,7 @@
         colorInput.type = 'color';
         colorInput.value = penColor;
         colorInput.title = 'Цвет';
+        colorInputEl = colorInput;
         colorInput.setAttribute('aria-label', 'Цвет рисования');
         Object.assign(colorInput.style, {
             width: '28px', height: '24px', border: 'none', background: 'transparent',
@@ -580,6 +1281,10 @@
         colorInput.addEventListener('input', () => {
             penColor = colorInput.value;
             storeSet('img_mag_color', penColor);
+        });
+        colorInput.addEventListener('change', () => {
+            pushRecentColor(colorInput.value);
+            if (quickPaletteEl) refreshQuickPalette();
         });
         colorInput.addEventListener('mouseenter', () => {
             colorInput.style.boxShadow = '0 0 0 2px rgba(255,255,255,0.35)';
@@ -625,17 +1330,61 @@
         redoBtn = iconButton('redo', 'Повторить (Ctrl+Shift+Z)', () => redo());
         const clearBtn = iconButton('trash', 'Очистить всё', () => clearAll());
 
+        // Группы новых возможностей — меню, а не стена иконок.
+        analysisBtn = iconButton('scan', 'Анализ изображения', (e) => openAnalysisMenu(e.currentTarget));
+        analysisBtn.setAttribute('aria-haspopup', 'true');
+        analysisBtn.setAttribute('aria-expanded', 'false');
+        exportBtn = iconButton('export', 'Экспорт и буфер', (e) => openExportMenu(e.currentTarget));
+        exportBtn.setAttribute('aria-haspopup', 'true');
+        exportBtn.setAttribute('aria-expanded', 'false');
+        moreBtn = iconButton('more', 'Ещё: закрепление, сетка, вид', (e) => openMoreMenu(e.currentTarget));
+        moreBtn.setAttribute('aria-haspopup', 'true');
+        moreBtn.setAttribute('aria-expanded', 'false');
+
         tb.append(
             toolBtn('move', 'move', 'Перемещение / панорама (V)'),
-            toolBtn('pen', 'pen', 'Карандаш (P)'),
-            toolBtn('line', 'line', 'Линия (L)'),
-            toolBtn('arrow', 'arrow', 'Стрелка (A)'),
-            toolBtn('rect', 'rect', 'Прямоугольник (R)'),
-            toolBtn('circle', 'circle', 'Эллипс (E)'),
-            toolBtn('text', 'text', 'Текст (T)'),
-            separator(), colorInput, widthSel, fillBtn, separator(),
+            toolBtn('pen', 'pen', 'Карандаш (1)'),
+            toolBtn('line', 'line', 'Линия (2)'),
+            toolBtn('arrow', 'arrow', 'Стрелка (3)'),
+            toolBtn('rect', 'rect', 'Прямоугольник (4)'),
+            toolBtn('circle', 'circle', 'Эллипс (5)'),
+            toolBtn('text', 'text', 'Текст (6)'),
+            separator(), colorInput, widthSel, fillBtn,
+            quickPaletteEl = buildQuickPalette(),
+            tbSpacer(),
             undoBtn, redoBtn, clearBtn
         );
+
+        // вторая полоса: действия над картинкой и меню-группы
+        const tb2 = document.createElement('div');
+        Object.assign(tb2.style, {
+            display: 'flex', alignItems: 'center', gap: '3px', flexWrap: 'wrap',
+            flex: '0 0 auto', padding: '0 8px 4px', background: 'transparent',
+            userSelect: 'none', boxSizing: 'border-box',
+        });
+        const rowLabel = document.createElement('span');
+        rowLabel.textContent = 'Анализ и экспорт';
+        Object.assign(rowLabel.style, {
+            fontSize: '11px', opacity: '0.45', marginRight: '4px',
+            flex: '0 1 auto', overflow: 'hidden', textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap', minWidth: '0',
+        });
+        tb2.append(rowLabel, analysisBtn, exportBtn, moreBtn);
+
+        tbWrap.append(tb, tb2);
+
+        // кнопки-меню не участвуют в подсветке «активный инструмент»
+        setBtnActive(analysisBtn, false);
+        setBtnActive(exportBtn, false);
+        setBtnActive(moreBtn, false);
+
+        tb.addEventListener('mousedown', (e) => {
+            // клик по пустому месту панели не должен таскать окно
+            if (e.target === tb || e.target === tb2) e.stopPropagation();
+        });
+        tb2.addEventListener('mousedown', (e) => {
+            if (e.target === tb2) e.stopPropagation();
+        });
 
         // --- вьюпорт ---
         viewEl = document.createElement('div');
@@ -672,11 +1421,12 @@
         statusEl.textContent = 'Загрузка…';
 
         viewEl.append(imgEl, drawEl, statusEl, buildHelp());
-        win.append(barEl, tb, viewEl);
+        win.append(barEl, tbWrap, viewEl);
 
         // --- события ---
         viewEl.addEventListener('wheel', onWheel, { passive: false });
         viewEl.addEventListener('mousedown', onMouseDown);
+        viewEl.addEventListener('dblclick', onDblClick);
         viewEl.addEventListener('contextmenu', onContextMenu);
         viewEl.addEventListener('touchstart', onTouchStart, { passive: false });
         viewEl.addEventListener('touchmove', onTouchMove, { passive: false });
@@ -737,6 +1487,8 @@
                 invalidate();
             }
             checkExportable();
+            buildPyramid();
+            buildImagePalette();
         });
         imgEl.addEventListener('error', () => {
             if (!win) return;
@@ -744,7 +1496,29 @@
         });
         imgEl.src = url;
 
+        watchDpr();
+        startDprPoll();
         try { win.focus({ preventScroll: true }); } catch (e) { /* ignore */ }
+    }
+
+    // Сбрасываем всё, что относится к конкретной картинке/сессии.
+    function resetPerFeatureState() {
+        perspCanvas = null;
+        perspCorners = [];
+        perspPicking = false;
+        perspBusy = false;
+        scanRect = null;
+        scanPick = false;
+        selShape = null;
+        dragShape = null;
+        lastShape = null;
+        imagePalette = [];
+        pyramid = null;
+        pyramidLevel = 0;
+        menuEl = null;
+        menuAnchorBtn = null;
+        liveEl = null;
+        clearBaseCache();
     }
 
     // --- Оверлей справки ---------------------------------------------------
@@ -764,19 +1538,28 @@
 
         const rows = [
             ['Колесо', 'Зум к курсору'],
-            ['Ctrl+0 / 100%', 'Масштаб 100%'],
+            ['Стрелки', 'Панорама (Shift — крупнее)'],
+            ['+ / −', 'Приблизить / отдалить'],
+            ['Ctrl+0', 'Масштаб 100%'],
             ['Ctrl+1', 'Вписать в окно'],
-            ['Пробел (удерж.)', 'Панорама'],
+            ['Пробел', 'Панорама (удерживать)'],
             ['СКМ', 'Панорама'],
+            ['1 … 6', 'Инструменты'],
             ['Ctrl+Z', 'Отменить'],
             ['Ctrl+Shift+Z', 'Повторить'],
             ['Shift', 'Квадрат / круг / 45°'],
-            ['Alt', 'Рисовать от центра'],
+            ['Alt + тащить', 'Дублировать фигуру'],
+            ['Ctrl + тащить', 'Копия фигуры'],
+            ['2× клик', 'Выбрать и править фигуру'],
+            ['Delete', 'Удалить выбранную'],
             ['Ctrl+C', 'Копировать изображение'],
-            ['Ctrl+S', 'Сохранить PNG'],
-            ['V P L A R E T', 'Инструменты'],
+            ['Ctrl+S', 'Сохранить (формат в «Экспорт»)'],
+            ['Shift+P', 'Закрепить окно'],
+            ['G', 'Сетка пикселей (от 800%)'],
+            ['Tab / Enter', 'Обход кнопок / нажать'],
+            ['C', 'Цвет рисования'],
             ['?', 'Эта справка'],
-            ['Esc', 'Закрыть']
+            ['Esc', 'Снять выделение / закрыть']
         ];
 
         for (let i = 0; i < rows.length; i++) {
@@ -858,7 +1641,7 @@
         const pw = Math.max(1, Math.round(vw * nd));
         const ph = Math.max(1, Math.round(vh * nd));
 
-        if (nd !== dpr || vw !== viewW || vh !== viewH) baseValid = false;
+        if (nd !== dpr || vw !== viewW || vh !== viewH) { baseValid = false; clearBaseCache(); }
         dpr = nd;
         viewW = vw;
         viewH = vh;
@@ -882,14 +1665,142 @@
         return true;
     }
 
+    // --- 6.1 Пирамида уровней (mipmap) -------------------------------------
+    // Предварительно строим 1/2, 1/4, 1/8. При уменьшении картинки рисуем
+    // мелкий уровень вместо гигантского исходника — это дешевле и плавнее.
+    function buildPyramid() {
+        pyramid = null;
+        pyramidLevel = 0;
+        const iw = imageW(), ih = imageH();
+        if (!iw || !ih || iw * ih < 1200 * 1200) return; // смысл есть только на больших
+        const levels = [];
+        let w = iw, h = ih;
+        for (let i = 0; i < 3; i++) {
+            w = Math.max(1, Math.round(w / 2));
+            h = Math.max(1, Math.round(h / 2));
+            if (w < 32 || h < 32) break;
+            levels.push({ w: w, h: h, canvas: null });
+        }
+        if (!levels.length) return;
+        pyramid = levels;
+
+        const src = sourceEl();
+        let idx = 0;
+        const step = () => {
+            if (!win || !pyramid) return;
+            if (idx >= levels.length) return;
+            const lv = levels[idx++];
+            const done = () => { if (win && pyramid) step(); };
+            try {
+                const cv = document.createElement('canvas');
+                cv.width = lv.w;
+                cv.height = lv.h;
+                const cx = cv.getContext('2d');
+                if (!cx) { done(); return; }
+                cx.imageSmoothingEnabled = true;
+                if (cx.imageSmoothingQuality) cx.imageSmoothingQuality = 'high';
+                cx.drawImage(src, 0, 0, lv.w, lv.h);
+                lv.canvas = cv;
+            } catch (e) { /* taint и прочее — просто без уровня */ }
+            done();
+        };
+        // строим асинхронно, чтобы не задерживать первый кадр
+        setTimeout(step, 60);
+    }
+
+    // Какой уровень рисовать при текущем масштабе.
+    function pyramidFor(sc) {
+        if (!pyramid) return null;
+        // эффективное уменьшение: если sc < 1, часть деталей не видна
+        let k = 0;
+        if (sc < 0.5) k = 3;
+        else if (sc < 0.25) k = 4;
+        else if (sc < 0.125) k = 5;
+        else return null;
+        const lv = pyramid[Math.min(pyramid.length, k) - 1];
+        if (!lv || !lv.canvas) return null;
+        return lv;
+    }
+
+    // --- 6.2 Кэш «тёплых» состояний ---------------------------------------
+    function cacheKey() {
+        return [
+            Math.round(scale * 10000), Math.round(tx * 2), Math.round(ty * 2),
+            baseRev, baseCanvas ? baseCanvas.width : 0, baseCanvas ? baseCanvas.height : 0,
+        ].join(':');
+    }
+
+    function clearBaseCache() {
+        for (let i = 0; i < baseCache.length; i++) {
+            const e = baseCache[i];
+            if (e.canvas) { e.canvas.width = 0; e.canvas.height = 0; }
+        }
+        baseCache.length = 0;
+    }
+
+    function cacheBudgetUsed() {
+        let n = 0;
+        for (let i = 0; i < baseCache.length; i++) {
+            const c = baseCache[i].canvas;
+            n += c.width * c.height * 4;
+        }
+        return n;
+    }
+
+    function cacheGet(key) {
+        for (let i = 0; i < baseCache.length; i++) {
+            if (baseCache[i].key === key) {
+                const e = baseCache.splice(i, 1)[0];
+                baseCache.unshift(e);   // LRU: трогаем при обращении
+                e.used = Date.now();
+                return e.canvas;
+            }
+        }
+        return null;
+    }
+
+    function cachePut(key, src) {
+        if (!src || !win) return;
+        const bytes = src.width * src.height * 4;
+        if (bytes > CACHE_MAX_BYTES * 0.6) return; // один кадр уже великоват
+        let cv;
+        try {
+            cv = document.createElement('canvas');
+            cv.width = src.width;
+            cv.height = src.height;
+            const c = cv.getContext('2d');
+            if (!c) return;
+            c.drawImage(src, 0, 0);
+        } catch (e) { return; }
+
+        baseCache.unshift({ key: key, canvas: cv, used: Date.now() });
+        while (baseCache.length > CACHE_MAX_ENTRIES || cacheBudgetUsed() > CACHE_MAX_BYTES) {
+            const dropped = baseCache.pop();
+            if (dropped && dropped.canvas) {
+                dropped.canvas.width = 0;
+                dropped.canvas.height = 0;
+            }
+            if (!baseCache.length) break;
+        }
+    }
+
     // Пересобираем кэш: картинка + подтверждённые аннотации при текущем
     // масштабе. Делается только при смене зума/панорамы/аннотаций, а не на
     // каждый mousemove.
     function rebuildBase() {
         if (!baseCanvas || !baseCtx) return;
+        const key = cacheKey();
+        const warm = baseValid ? null : cacheGet(key);
         const c = baseCtx;
         c.setTransform(1, 0, 0, 1, 0, 0);
         c.clearRect(0, 0, baseCanvas.width, baseCanvas.height);
+
+        if (warm) {
+            try { c.drawImage(warm, 0, 0); } catch (e) { /* ignore */ }
+            baseValid = true;
+            return;
+        }
+
         c.setTransform(dpr, 0, 0, dpr, 0, 0);
 
         const iw = imageW(), ih = imageH();
@@ -897,12 +1808,84 @@
             // при сильном увеличении показываем пиксели без сглаживания
             c.imageSmoothingEnabled = scale < 3;
             if (c.imageSmoothingQuality) c.imageSmoothingQuality = 'high';
-            c.drawImage(imgEl, tx, ty, iw * scale, ih * scale);
+            const src = sourceEl();
+            const lv = pyramidFor(scale);
+            if (lv) {
+                c.drawImage(lv.canvas, tx, ty, iw * scale, ih * scale);
+            } else {
+                c.drawImage(src, tx, ty, iw * scale, ih * scale);
+            }
+            if (pixelGrid) drawPixelGrid(c, iw, ih);
         }
         for (let i = 0; i < annotations.length; i++) {
             drawShape(c, annotations[i], scale, tx, ty);
         }
+        if (selShape) drawSelection(c, selShape);
         baseValid = true;
+
+        // запоминаем «тёплый» кадр (без подсветки выделения — её рисуем сверху)
+        if (!selShape) cachePut(key, baseCanvas);
+    }
+
+    // 9.3 Сетка пикселей при увеличении ≥ 800%
+    function drawPixelGrid(c, iw, ih) {
+        if (scale < PIXEL_GRID_FROM) return;
+        const x0 = Math.max(0, Math.floor((0 - tx) / scale));
+        const y0 = Math.max(0, Math.floor((0 - ty) / scale));
+        const x1 = Math.min(iw, Math.ceil((viewW - tx) / scale));
+        const y1 = Math.min(ih, Math.ceil((viewH - ty) / scale));
+        if (x1 <= x0 || y1 <= y0) return;
+        // не рисуем десятки тысяч линий
+        if ((x1 - x0) > 900 || (y1 - y0) > 900) return;
+
+        c.save();
+        c.setTransform(dpr, 0, 0, dpr, 0, 0);
+        c.lineWidth = 1;
+        c.strokeStyle = 'rgba(120,190,255,0.45)';
+        c.beginPath();
+        for (let x = x0; x <= x1; x++) {
+            const sx = Math.round(x * scale + tx) + 0.5;
+            c.moveTo(sx, Math.round(y0 * scale + ty));
+            c.lineTo(sx, Math.round(y1 * scale + ty));
+        }
+        for (let y = y0; y <= y1; y++) {
+            const sy = Math.round(y * scale + ty) + 0.5;
+            c.moveTo(Math.round(x0 * scale + tx), sy);
+            c.lineTo(Math.round(x1 * scale + tx), sy);
+        }
+        c.stroke();
+
+        // координаты: подписываем каждые 5 пикселей (или каждый, если их мало)
+        const stepPx = scale >= 16 ? 1 : (scale >= 12 ? 2 : 5);
+        c.font = '9px ui-monospace, monospace';
+        c.fillStyle = 'rgba(160,215,255,0.85)';
+        c.textBaseline = 'top';
+        for (let x = x0; x <= x1; x += stepPx) {
+            const sx = x * scale + tx;
+            if (sx < 10 || sx > viewW - 4) continue;
+            c.fillText(String(x), sx + 1, 2);
+        }
+        for (let y = y0; y <= y1; y += stepPx) {
+            const sy = y * scale + ty;
+            if (sy < 10 || sy > viewH - 4) continue;
+            c.fillText(String(y), 2, sy + 1);
+        }
+        c.restore();
+    }
+
+    function drawSelection(c, shape) {
+        const b = shapeBounds(shape);
+        if (!b) return;
+        c.save();
+        c.setTransform(dpr, 0, 0, dpr, 0, 0);
+        const x = b.x1 * scale + tx, y = b.y1 * scale + ty;
+        const w = (b.x2 - b.x1) * scale, h = (b.y2 - b.y1) * scale;
+        c.strokeStyle = '#4da3ff';
+        c.lineWidth = 1.5;
+        c.setLineDash([5, 4]);
+        c.strokeRect(x - 3, y - 3, w + 6, h + 6);
+        c.setLineDash([]);
+        c.restore();
     }
 
     function redraw() {
@@ -918,10 +1901,12 @@
         c.clearRect(0, 0, drawEl.width, drawEl.height);
         if (baseCanvas.width && baseCanvas.height) c.drawImage(baseCanvas, 0, 0);
 
-        if (inProgress) {
+        if (inProgress || scanRect || perspPicking) {
             c.setTransform(dpr, 0, 0, dpr, 0, 0);
-            drawShape(c, inProgress, scale, tx, ty);
         }
+        if (inProgress) drawShape(c, inProgress, scale, tx, ty);
+        if (scanRect) drawScanRect(c);
+        if (perspPicking) drawPerspPicking(c);
     }
 
     function requestDraw() {
@@ -1025,7 +2010,120 @@
         }
     }
 
-    // --- Масштаб ------------------------------------------------------------
+    // --- Границы фигуры и хит-тест (4.2) -----------------------------------
+    function shapeBounds(s) {
+        if (!s) return null;
+        if (s.type === 'pen') {
+            const pts = s.points || [];
+            if (!pts.length) return null;
+            let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+            for (let i = 0; i < pts.length; i++) {
+                if (pts[i].x < x1) x1 = pts[i].x;
+                if (pts[i].x > x2) x2 = pts[i].x;
+                if (pts[i].y < y1) y1 = pts[i].y;
+                if (pts[i].y > y2) y2 = pts[i].y;
+            }
+            return { x1: x1, y1: y1, x2: x2, y2: y2 };
+        }
+        if (s.type === 'text') {
+            const lines = String(s.text || '').split('\n');
+            const lh = s.lh || (s.size * 1.25);
+            let maxLen = 1;
+            for (let i = 0; i < lines.length; i++) maxLen = Math.max(maxLen, lines[i].length);
+            return {
+                x1: s.x, y1: s.y,
+                x2: s.x + maxLen * s.size * 0.62,
+                y2: s.y + Math.max(1, lines.length) * lh,
+            };
+        }
+        return {
+            x1: Math.min(s.x1, s.x2), y1: Math.min(s.y1, s.y2),
+            x2: Math.max(s.x1, s.x2), y2: Math.max(s.y1, s.y2),
+        };
+    }
+
+    function distToSegment(px, py, ax, ay, bx, by) {
+        const dx = bx - ax, dy = by - ay;
+        const len2 = dx * dx + dy * dy;
+        if (!len2) return Math.hypot(px - ax, py - ay);
+        let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+        t = clamp(t, 0, 1);
+        return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+    }
+
+    // Поиск фигуры под точкой (координаты картинки), сверху вниз по стеку.
+    function hitTest(ix, iy) {
+        const tol = HIT_TOLERANCE / Math.max(scale, 0.0001);
+        for (let i = annotations.length - 1; i >= 0; i--) {
+            const s = annotations[i];
+            if (!s) continue;
+            if (s.type === 'pen') {
+                const pts = s.points || [];
+                const w = Math.max(s.width / 2, tol);
+                for (let k = 1; k < pts.length; k++) {
+                    if (distToSegment(ix, iy, pts[k - 1].x, pts[k - 1].y, pts[k].x, pts[k].y) <= w) return i;
+                }
+                if (pts.length === 1 && Math.hypot(ix - pts[0].x, iy - pts[0].y) <= w) return i;
+                continue;
+            }
+            if (s.type === 'line' || s.type === 'arrow') {
+                const w = Math.max(s.width / 2, tol);
+                if (distToSegment(ix, iy, s.x1, s.y1, s.x2, s.y2) <= w) return i;
+                continue;
+            }
+            const b = shapeBounds(s);
+            if (!b) continue;
+            if (ix >= b.x1 - tol && ix <= b.x2 + tol && iy >= b.y1 - tol && iy <= b.y2 + tol) {
+                // для текста хватает рамки, для рамок/эллипсов — тоже рамка
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    function selectShape(shape) {
+        selShape = shape;
+        invalidate();
+    }
+
+    function deleteShape(shape) {
+        if (!shape) return;
+        const idx = annotations.indexOf(shape);
+        if (idx === -1) return;
+        annotations = annotations.slice(0, idx).concat(annotations.slice(idx + 1));
+        selShape = null;
+        commit();
+        toast('Фигура удалена (Ctrl+Z — вернуть)');
+    }
+
+    // Клонирование фигуры со смещением (4.2: Alt — дублировать, Ctrl — копия)
+    function cloneShape(s, dx, dy) {
+        if (!s) return null;
+        const c = {};
+        for (const k in s) {
+            if (k === 'points') {
+                c.points = (s.points || []).map((p) => ({ x: p.x + dx, y: p.y + dy }));
+            } else if (k === 'x') {
+                c.x = s.x + dx;
+            } else if (k === 'y') {
+                c.y = s.y + dy;
+            } else if (k === 'x1') {
+                c.x1 = s.x1 + dx;
+            } else if (k === 'y1') {
+                c.y1 = s.y1 + dy;
+            } else if (k === 'x2') {
+                c.x2 = s.x2 + dx;
+            } else if (k === 'y2') {
+                c.y2 = s.y2 + dy;
+            } else if (k === 'ax' || k === 'ay') {
+                c[k] = s[k] + (k === 'ax' ? dx : dy);
+            } else {
+                c[k] = s[k];
+            }
+        }
+        return c;
+    }
+
     function updateZoomLabel() {
         if (!zoomLabel) return;
         zoomLabel.textContent = Math.round(scale * 100) + '%';
@@ -1118,8 +2216,12 @@
         if (!toolButtons[name] && name !== 'move') name = 'move';
         if (textInput && name !== 'text') commitText(true);
         currentTool = name;
+        if (name !== 'move') { scanPick = false; scanRect = null; }
         for (const k in toolButtons) setBtnActive(toolButtons[k], k === name);
-        if (viewEl) viewEl.style.cursor = (name === 'move') ? 'grab' : 'crosshair';
+        if (viewEl) {
+            viewEl.style.cursor = ghostMode ? 'default'
+                : (name === 'move' ? 'grab' : 'crosshair');
+        }
         if (!silent) storeSet('img_mag_tool', name);
     }
 
@@ -1143,6 +2245,8 @@
         history.push(annotations.slice());
         if (history.length > HISTORY_LIMIT) history.shift();
         histIndex = history.length - 1;
+        baseRev++;
+        clearBaseCache();
         updateHistoryButtons();
         invalidate();
     }
@@ -1152,6 +2256,9 @@
         if (histIndex <= 0) return;
         histIndex--;
         annotations = history[histIndex].slice();
+        if (selShape && annotations.indexOf(selShape) === -1) selShape = null;
+        baseRev++;
+        clearBaseCache();
         updateHistoryButtons();
         invalidate();
     }
@@ -1160,13 +2267,17 @@
         if (histIndex >= history.length - 1) return;
         histIndex++;
         annotations = history[histIndex].slice();
+        if (selShape && annotations.indexOf(selShape) === -1) selShape = null;
+        baseRev++;
+        clearBaseCache();
         updateHistoryButtons();
         invalidate();
     }
 
     function clearAll() {
-        if (!annotations.length) return;
+        if (!annotations.length && !selShape) return;
         annotations = [];
+        selShape = null;
         commit();
         toast('Аннотации очищены (Ctrl+Z — вернуть)');
     }
@@ -1177,6 +2288,7 @@
             return;
         }
         annotations = annotations.concat([shape]);
+        lastShape = shape;
         commit();
         // после ввода текста сразу возвращаемся к панораме:
         // это самый частый следующий шаг
@@ -1284,7 +2396,7 @@
     // Текст хранится в координатах картинки (s.x, s.y, s.size), поэтому он
     // жёстко приклеен к изображению при любом зуме/панораме и попадает в
     // экспорт ровно туда, где был на экране.
-    function openTextEditor(sx, sy) {
+    function openTextEditor(sx, sy, initialText) {
         if (!viewEl || !win) return;
         commitText(true);
 
@@ -1392,6 +2504,10 @@
 
         viewEl.appendChild(inp);
         autosize();
+        if (initialText) {
+            inp.value = String(initialText);
+            autosize();
+        }
         try { inp.focus({ preventScroll: true }); } catch (err) { /* ignore */ }
     }
 
@@ -1418,6 +2534,7 @@
         if (!viewEl || !drawEl) return;
         if (e.target !== drawEl && e.target !== viewEl) return; // клики по полю текста и т.п.
         if (helpVisible()) { toggleHelp(false); return; }
+        if (menuEl) closeMenu();
 
         // клик по картинке при открытом редакторе = «готово»,
         // без одновременного старта панорамы/штриха
@@ -1440,17 +2557,91 @@
         }
         if (e.button !== 0) return;
 
+        const r = getViewRect();
+        const sx = e.clientX - r.left;
+        const sy = e.clientY - r.top;
+
+        // 1.5 — ставим четыре угла
+        if (perspPicking) {
+            e.preventDefault();
+            e.stopPropagation();
+            addPerspCorner(sx, sy);
+            return;
+        }
+
+        // 2.3 / 2.4 — выделяем область
+        if (scanPick) {
+            e.preventDefault();
+            e.stopPropagation();
+            scanRect = { x1: sx, y1: sy, x2: sx, y2: sy };
+            mode = 'scan';
+            requestDraw();
+            return;
+        }
+
         if (currentTool === 'move') {
+            // 4.2 — в режиме панорамы даём тащить выбранную/найденную фигуру
+            const p = s2i(sx, sy);
+            const hit = hitTest(p.x, p.y);
+            if (hit !== -1) {
+                const shape = annotations[hit];
+                e.preventDefault();
+                e.stopPropagation();
+                if (selShape !== shape) { selShape = shape; invalidate(); }
+                dragShape = { shape: shape, ox: p.x, oy: p.y, moved: false, alt: e.altKey };
+                mode = 'shape';
+                if (viewEl) viewEl.style.cursor = 'move';
+                return;
+            }
+            if (selShape) { selShape = null; invalidate(); }
             e.preventDefault();
             beginPan(e.clientX, e.clientY);
             if (viewEl) viewEl.style.cursor = 'grabbing';
             return;
         }
 
+        // рисующие инструменты: проверяем попадание по фигуре для правки
+        const ip = s2i(sx, sy);
+        const hitIdx = hitTest(ip.x, ip.y);
+        if (hitIdx !== -1 && annotations[hitIdx]) {
+            const shape = annotations[hitIdx];
+            e.preventDefault();
+            e.stopPropagation();
+            selShape = shape;
+            if (e.altKey || e.ctrlKey || e.metaKey) {
+                // дубликат существующей фигуры
+                const dup = cloneShape(shape, 0, 0);
+                lastShape = dup;
+                pushAnnotation(dup);
+                selShape = dup;
+                invalidate();
+                dragShape = { shape: dup, ox: ip.x, oy: ip.y, moved: false, alt: false };
+                mode = 'shape';
+                announce('Фигура продублирована');
+                return;
+            }
+            dragShape = { shape: shape, ox: ip.x, oy: ip.y, moved: false, alt: false };
+            mode = 'shape';
+            invalidate();
+            return;
+        }
+
         e.preventDefault();
         e.stopPropagation();
-        const r = getViewRect();
-        beginStroke(e.clientX - r.left, e.clientY - r.top);
+
+        // Alt + перетаскивание: дублируем последнюю фигуру со смещением
+        if (e.altKey && lastShape && annotations.indexOf(lastShape) === -1) {
+            // последнюю могли отменить — берём последнюю из истории
+            lastShape = annotations.length ? annotations[annotations.length - 1] : null;
+        }
+        if (e.altKey && lastShape) {
+            dragShape = { shape: lastShape, ox: ip.x, oy: ip.y, moved: false, alt: true, cloneMade: false };
+            mode = 'shape';
+            if (viewEl) viewEl.style.cursor = 'move';
+            return;
+        }
+
+        beginStroke(sx, sy);
     }
 
     function onMouseMove(e) {
@@ -1459,6 +2650,49 @@
         if (drawing && inProgress) {
             const r = getViewRect();
             updateStroke(e.clientX - r.left, e.clientY - r.top, e.shiftKey, e.altKey);
+            return;
+        }
+
+        if (mode === 'scan') {
+            const r = getViewRect();
+            scanRect.x2 = e.clientX - r.left;
+            scanRect.y2 = e.clientY - r.top;
+            requestDraw();
+            return;
+        }
+
+        if (mode === 'shape' && dragShape) {
+            const r = getViewRect();
+            const p = s2i(e.clientX - r.left, e.clientY - r.top);
+            const dx = p.x - dragShape.ox;
+            const dy = p.y - dragShape.oy;
+            if (Math.abs(dx) * scale > 2 || Math.abs(dy) * scale > 2) {
+                dragShape.moved = true;
+            }
+            if (dragShape.moved) {
+                if (dragShape.alt && !dragShape.cloneMade) {
+                    // Alt-дубликат создаётся только когда реально потащили
+                    const dup = cloneShape(dragShape.shape, 0, 0);
+                    if (dup) {
+                        lastShape = dup;
+                        pushAnnotation(dup);
+                        selShape = dup;
+                        dragShape.shape = dup;
+                        dragShape.cloneMade = true;
+                    }
+                }
+                if (dragShape.cloneMade) {
+                    // тянем копию от исходной точки — пересчитываем от базы
+                    moveShapeBy(dragShape.shape, dx - (dragShape.lastDx || 0), dy - (dragShape.lastDy || 0));
+                    dragShape.lastDx = dx;
+                    dragShape.lastDy = dy;
+                } else {
+                    moveShapeBy(dragShape.shape, dx, dy);
+                    dragShape.ox = p.x;
+                    dragShape.oy = p.y;
+                }
+                invalidate();
+            }
             return;
         }
 
@@ -1480,9 +2714,49 @@
         }
     }
 
+    // Сдвиг фигуры в координатах картинки (все поля сразу)
+    function moveShapeBy(s, dx, dy) {
+        if (!s || (!dx && !dy)) return;
+        if (s.type === 'pen') {
+            const pts = s.points || [];
+            for (let i = 0; i < pts.length; i++) { pts[i].x += dx; pts[i].y += dy; }
+            return;
+        }
+        if (s.type === 'text') { s.x += dx; s.y += dy; return; }
+        s.x1 += dx; s.y1 += dy; s.x2 += dx; s.y2 += dy;
+        if (s.ax !== undefined) s.ax += dx;
+        if (s.ay !== undefined) s.ay += dy;
+    }
+
     function onMouseUp() {
         if (drawing) {
             endStroke(false);
+            return;
+        }
+        if (mode === 'scan' && scanRect) {
+            const rc = normalizeRect(scanRect);
+            scanRect = null;
+            mode = null;
+            if (rc && rc.w * scale >= 6 && rc.h * scale >= 6) {
+                runScan(rc);
+            } else {
+                announce('Слишком маленькая область');
+                requestDraw();
+            }
+            return;
+        }
+        if (mode === 'shape' && dragShape) {
+            const changed = dragShape.moved;
+            dragShape = null;
+            mode = null;
+            if (changed) {
+                baseRev++;
+                clearBaseCache();
+                commit();
+            } else {
+                invalidate();
+            }
+            if (viewEl) viewEl.style.cursor = currentTool === 'move' ? 'grab' : 'crosshair';
             return;
         }
         if (mode === 'pan' && viewEl) {
@@ -1512,8 +2786,35 @@
 
     function onOutsideClick(e) {
         if (!win) return;
-        if (win.contains(e.target)) return;
+        if (win.contains(e.target)) {
+            // клик мимо открытого меню, но внутри окна — закрываем меню
+            if (menuEl && !menuEl.contains(e.target) && e.target !== menuAnchorBtn) closeMenu();
+            return;
+        }
+        if (menuEl) closeMenu();
+        if (pinned) return;            // 5.3: закреплённое окно не закрывается
         closeWindow();
+    }
+
+    // 4.2: двойной клик по фигуре — выбрать и править
+    function onDblClick(e) {
+        if (!win || !drawEl) return;
+        if (e.target !== drawEl && e.target !== viewEl) return;
+        if (textInput || helpVisible()) return;
+        const r = getViewRect();
+        const p = s2i(e.clientX - r.left, e.clientY - r.top);
+        const hit = hitTest(p.x, p.y);
+        if (hit === -1) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const shape = annotations[hit];
+        selShape = shape;
+        invalidate();
+        if (shape.type === 'text') {
+            editTextShape(shape);
+        } else {
+            openShapeMenu(shape, e.clientX, e.clientY);
+        }
     }
 
     function onPageScroll() {
@@ -1651,6 +2952,915 @@
         schedulePersist();
     }
 
+    // ======================================================================
+    // 1.4 Палитра изображения
+    // ======================================================================
+    function buildImagePalette() {
+        imagePalette = [];
+        const src = sourceEl();
+        const iw = imageW(), ih = imageH();
+        if (!src || !iw || !ih) return;
+
+        let data = null;
+        try {
+            const c = document.createElement('canvas');
+            c.width = PALETTE_SAMPLE;
+            c.height = PALETTE_SAMPLE;
+            const x = c.getContext('2d');
+            if (!x) return;
+            x.imageSmoothingEnabled = true;
+            if (x.imageSmoothingQuality) x.imageSmoothingQuality = 'high';
+            // «contain» — чтобы не растянуть пропорции, но выборка всё равно
+            // покрывает картинку целиком
+            x.fillStyle = '#000';
+            x.drawImage(src, 0, 0, PALETTE_SAMPLE, PALETTE_SAMPLE);
+            data = x.getImageData(0, 0, PALETTE_SAMPLE, PALETTE_SAMPLE).data;
+        } catch (e) {
+            imagePalette = [];   // tainted canvas: палитры не будет
+            return;
+        }
+
+        // грубые бины: 4 бита на канал
+        const bins = new Map();
+        for (let i = 0; i < data.length; i += 4) {
+            const a = data[i + 3];
+            if (a < 128) continue;
+            const r = data[i], g = data[i + 1], b = data[i + 2];
+            const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+            let e = bins.get(key);
+            if (!e) {
+                e = { n: 0, r: 0, g: 0, b: 0 };
+                bins.set(key, e);
+            }
+            e.n++;
+            e.r += r; e.g += g; e.b += b;
+        }
+        if (!bins.size) return;
+
+        const list = [];
+        bins.forEach((e) => {
+            list.push({
+                n: e.n,
+                r: Math.round(e.r / e.n),
+                g: Math.round(e.g / e.n),
+                b: Math.round(e.b / e.n),
+            });
+        });
+        list.sort((a, b) => b.n - a.n);
+
+        const picked = [];
+        for (let i = 0; i < list.length && picked.length < PALETTE_MAX; i++) {
+            const c = list[i];
+            let ok = true;
+            for (let k = 0; k < picked.length; k++) {
+                if (rgbDist(c, picked[k]) < PALETTE_MIN_DIST) { ok = false; break; }
+            }
+            if (ok) picked.push(c);
+            if (picked.length >= 5 && i > 60) break;
+        }
+        while (picked.length < 5 && list.length > picked.length) {
+            // добираем до пяти, если квантование дало мало далёких цветов
+            const c = list[picked.length];
+            let dup = false;
+            for (let k = 0; k < picked.length; k++) {
+                if (rgbDist(c, picked[k]) < 6) { dup = true; break; }
+            }
+            if (!dup) picked.push(c);
+            else break;
+        }
+
+        imagePalette = picked.map((c) => rgbToHex(c.r, c.g, c.b));
+    }
+
+    function openPalettePanel(anchorBtn) {
+        openPanel(anchorBtn, 'Палитра изображения', (panel) => {
+            if (!imagePalette.length) {
+                menuNote(panel, canExport === false
+                    ? 'Изображение с другого сайта защищено CORS — палитру построить нельзя.'
+                    : 'Палитра ещё не готова.');
+                return;
+            }
+            const grid = mk('div', {
+                display: 'flex', flexWrap: 'wrap', gap: '6px', padding: '2px 6px 4px',
+            });
+            imagePalette.forEach((hex) => {
+                const cell = mk('button', {
+                    width: '40px', height: '30px', padding: '0', background: hex,
+                    border: '1px solid rgba(0,0,0,0.5)', borderRadius: '5px',
+                    cursor: 'pointer', outline: 'none',
+                    boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.22)',
+                });
+                cell.type = 'button';
+                cell.title = hex.toUpperCase() + ' — скопировать и взять кистью';
+                cell.setAttribute('aria-label', 'Цвет ' + hex.toUpperCase() +
+                    ': скопировать HEX и выбрать для рисования');
+                cell.addEventListener('focus', () => { cell.style.outline = '2px solid #4da3ff'; });
+                cell.addEventListener('blur', () => { cell.style.outline = 'none'; });
+                cell.addEventListener('click', () => {
+                    setPenColor(hex, true);
+                    copyText(hex.toUpperCase(), 'HEX ' + hex.toUpperCase() + ' скопирован, кисть — этого цвета');
+                });
+                grid.appendChild(cell);
+            });
+            panel.appendChild(grid);
+
+            const row = mk('div', { display: 'flex', flexWrap: 'wrap', gap: '4px', padding: '0 6px 4px' });
+            imagePalette.forEach((hex) => {
+                const lbl = mk('span', {
+                    font: '10.5px ui-monospace, monospace', opacity: '0.7',
+                });
+                lbl.textContent = hex.toUpperCase();
+                row.appendChild(lbl);
+            });
+            panel.appendChild(row);
+            menuNote(panel, 'Клик по плашке: HEX в буфер + цвет кисти.');
+        }, { minWidth: 210 });
+    }
+
+    // ======================================================================
+    // 1.5 Перспективная коррекция
+    // ======================================================================
+    function beginPerspective() {
+        if (!imgEl || !imageW()) { toast('Картинка ещё не загрузилась'); return; }
+        perspCorners = [];
+        perspPicking = true;
+        setTool('move');
+        if (helpVisible()) toggleHelp(false);
+        selShape = null;
+        if (viewEl) viewEl.style.cursor = 'crosshair';
+        invalidate();
+        announce('Укажите четыре угла документа: левый верх, правый верх, правый низ, левый низ');
+    }
+
+    function cancelPerspective() {
+        perspPicking = false;
+        perspCorners = [];
+        if (viewEl) viewEl.style.cursor = ghostMode ? 'default' : 'grab';
+        invalidate();
+    }
+
+    function addPerspCorner(sx, sy) {
+        const p = s2i(sx, sy);
+        perspCorners.push({ x: p.x, y: p.y });
+        if (perspCorners.length < 4) {
+            announce('Угол ' + perspCorners.length + ' из 4');
+            requestDraw();
+            return;
+        }
+        perspPicking = false;
+        if (viewEl) viewEl.style.cursor = ghostMode ? 'default' : 'grab';
+        applyPerspective();
+    }
+
+    function drawPerspPicking(c) {
+        const pts = perspCorners;
+        c.save();
+        c.lineWidth = 1.6;
+        c.strokeStyle = '#4da3ff';
+        c.fillStyle = '#4da3ff';
+        c.setLineDash([]);
+        if (pts.length > 1) {
+            c.beginPath();
+            c.moveTo(pts[0].x * scale + tx, pts[0].y * scale + ty);
+            for (let i = 1; i < pts.length; i++) {
+                c.lineTo(pts[i].x * scale + tx, pts[i].y * scale + ty);
+            }
+            if (pts.length === 4) c.closePath();
+            c.stroke();
+        }
+        for (let i = 0; i < pts.length; i++) {
+            const x = pts[i].x * scale + tx;
+            const y = pts[i].y * scale + ty;
+            c.beginPath();
+            c.arc(x, y, 5, 0, Math.PI * 2);
+            c.fill();
+            c.fillStyle = '#0d1a26';
+            c.font = '600 10px ui-monospace, monospace';
+            c.textAlign = 'center';
+            c.textBaseline = 'middle';
+            c.fillText(String(i + 1), x, y);
+            c.fillStyle = '#4da3ff';
+        }
+        c.restore();
+    }
+
+    // Гомография: 4 точки источника → прямоугольник. Выборка по пикселям
+    // в выходной холст разумного размера (иначе большие фото подвесили бы вкладку).
+    function applyPerspective() {
+        if (perspCorners.length !== 4 || perspBusy) return;
+        const src = sourceEl();
+        const iw = imageW(), ih = imageH();
+        if (!src || !iw || !ih) return;
+
+        const d = perspCorners;
+        const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+        const topW = dist(d[0], d[1]);
+        const botW = dist(d[3], d[2]);
+        const leftH = dist(d[0], d[3]);
+        const rightH = dist(d[1], d[2]);
+        let outW = Math.round(Math.max(topW, botW));
+        let outH = Math.round(Math.max(leftH, rightH));
+        if (!outW || !outH) { cancelPerspective(); return; }
+
+        // ограничители: сторона и площадь
+        const sideCap = Math.min(WARP_MAX_SIDE, Math.round(Math.sqrt(WARP_MAX_PIXELS)));
+        outW = clamp(outW, 8, sideCap);
+        outH = clamp(outH, 8, Math.max(8, Math.floor(WARP_MAX_PIXELS / outW)));
+
+        perspBusy = true;
+        announce('Выпрямляем…');
+
+        try {
+            const cv = document.createElement('canvas');
+            cv.width = outW;
+            cv.height = outH;
+            const out = cv.getContext('2d');
+            if (!out) throw new Error('ctx');
+
+            // исходник → ImageData целиком (так выборка дешевле)
+            const sc = document.createElement('canvas');
+            sc.width = iw;
+            sc.height = ih;
+            const sctx = sc.getContext('2d');
+            if (!sctx) throw new Error('ctx');
+            sctx.drawImage(src, 0, 0, iw, ih);
+            const srcData = sctx.getImageData(0, 0, iw, ih);
+            const sd = srcData.data;
+
+            const dst = out.createImageData(outW, outH);
+            const dd = dst.data;
+
+            // Гомография из единичного квадрата (u,v) в 4 точки источника.
+            // Решаем 8×8 систему Гауссом.
+            const H = squareToQuad(d[0], d[1], d[2], d[3]);
+            if (!H) throw new Error('homography');
+
+            for (let y = 0; y < outH; y++) {
+                const v = (y + 0.5) / outH;
+                for (let x = 0; x < outW; x++) {
+                    const u = (x + 0.5) / outW;
+                    const den = H[6] * u + H[7] * v + 1;
+                    if (!den) continue;
+                    const sx = (H[0] * u + H[1] * v + H[2]) / den;
+                    const sy = (H[3] * u + H[4] * v + H[5]) / den;
+                    const ix = Math.round(sx), iy = Math.round(sy);
+                    if (ix < 0 || iy < 0 || ix >= iw || iy >= ih) continue;
+                    const si = (iy * iw + ix) * 4;
+                    const di = (y * outW + x) * 4;
+                    dd[di] = sd[si];
+                    dd[di + 1] = sd[si + 1];
+                    dd[di + 2] = sd[si + 2];
+                    dd[di + 3] = 255;
+                }
+            }
+            out.putImageData(dst, 0, 0);
+
+            perspCanvas = cv;
+            perspCorners = [];
+            perspBusy = false;
+            baseRev++;
+            clearBaseCache();
+            buildPyramid();
+            buildImagePalette();
+            fitImage();
+            toast('Перспектива исправлена. «Ещё» → вернуть оригинал');
+        } catch (e) {
+            perspBusy = false;
+            perspCorners = [];
+            invalidate();
+            toast('Не удалось выпрямить: изображение защищено CORS или слишком велико');
+        }
+    }
+
+    // Гомография единичного квадрата → четырёхугольник (Heckbert).
+    function squareToQuad(p0, p1, p2, p3) {
+        // p0=(0,0) p1=(1,0) p2=(1,1) p3=(0,1)
+        const dx1 = p1.x - p2.x, dx2 = p3.x - p2.x, sx = p0.x - p1.x + p2.x - p3.x;
+        const dy1 = p1.y - p2.y, dy2 = p3.y - p2.y, sy = p0.y - p1.y + p2.y - p3.y;
+        let g = 0, h = 0;
+        if (Math.abs(sx) > 1e-9 || Math.abs(sy) > 1e-9) {
+            const det = dx1 * dy2 - dx2 * dy1;
+            if (Math.abs(det) < 1e-9) return null;
+            g = (sx * dy2 - dx2 * sy) / det;
+            h = (dx1 * sy - sx * dy1) / det;
+        }
+        return [
+            p1.x - p0.x + g * p1.x, p3.x - p0.x + h * p3.x, p0.x,
+            p1.y - p0.y + g * p1.y, p3.y - p0.y + h * p3.y, p0.y,
+            g, h,
+        ];
+    }
+
+    function restorePerspective() {
+        if (!perspCanvas) { toast('Оригинал уже показан'); return; }
+        perspCanvas = null;
+        perspCorners = [];
+        perspPicking = false;
+        baseRev++;
+        clearBaseCache();
+        buildPyramid();
+        buildImagePalette();
+        fitImage();
+        toast('Показан оригинал');
+    }
+
+    // ======================================================================
+    // 2.3 / 2.4 Чтение области: текст, QR, штрих-коды
+    // ======================================================================
+    function normalizeRect(r) {
+        const x1 = Math.min(r.x1, r.x2), y1 = Math.min(r.y1, r.y2);
+        const x2 = Math.max(r.x1, r.x2), y2 = Math.max(r.y1, r.y2);
+        const a = s2i(x1, y1), b = s2i(x2, y2);
+        const iw = imageW(), ih = imageH();
+        const rx1 = clamp(Math.floor(a.x), 0, iw);
+        const ry1 = clamp(Math.floor(a.y), 0, ih);
+        const rx2 = clamp(Math.ceil(b.x), 0, iw);
+        const ry2 = clamp(Math.ceil(b.y), 0, ih);
+        const w = rx2 - rx1, h = ry2 - ry1;
+        if (w < 1 || h < 1) return null;
+        return { x: rx1, y: ry1, w: w, h: h, sx: x1, sy: y1, sw: x2 - x1, sh: y2 - y1 };
+    }
+
+    function drawScanRect(c) {
+        if (!scanRect) return;
+        const r = normalizeRectScreen(scanRect);
+        c.save();
+        c.fillStyle = 'rgba(77,163,255,0.14)';
+        c.fillRect(r.x, r.y, r.w, r.h);
+        c.strokeStyle = '#4da3ff';
+        c.lineWidth = 1.5;
+        c.setLineDash([6, 4]);
+        c.strokeRect(r.x + 0.5, r.y + 0.5, r.w, r.h);
+        c.setLineDash([]);
+        c.restore();
+    }
+
+    function normalizeRectScreen(r) {
+        const x = Math.min(r.x1, r.x2), y = Math.min(r.y1, r.y2);
+        return { x: x, y: y, w: Math.abs(r.x2 - r.x1), h: Math.abs(r.y2 - r.y1) };
+    }
+
+    // Пустой обработчик-заглушка: выделение области запускает один из действий
+    function startScan() {
+        if (!imgEl || !imageW()) { toast('Картинка ещё не загрузилась'); return; }
+        scanRect = null;
+        scanPick = true;
+        if (helpVisible()) toggleHelp(false);
+        if (viewEl) viewEl.style.cursor = 'crosshair';
+        setToolSilent('move');
+        announce('Выделите прямоугольник вокруг текста или кода');
+    }
+
+    function setToolSilent(name) {
+        // выделение идёт при любом инструменте, но курсор ставим крестиком
+        if (name) { /* no-op: инструмент не меняем */ }
+    }
+
+    // Вырезаем область в offscreen-холст (ограниченного размера).
+    function cropRegion(rect, scaleUp) {
+        const src = sourceEl();
+        if (!src) return null;
+        let w = Math.max(1, Math.round(rect.w * (scaleUp || 1)));
+        let h = Math.max(1, Math.round(rect.h * (scaleUp || 1)));
+        const cap = SCAN_MAX_SIDE;
+        if (w > cap || h > cap) {
+            const k = cap / Math.max(w, h);
+            w = Math.max(1, Math.round(w * k));
+            h = Math.max(1, Math.round(h * k));
+        }
+        try {
+            const cv = document.createElement('canvas');
+            cv.width = w;
+            cv.height = h;
+            const c = cv.getContext('2d');
+            if (!c) return null;
+            c.imageSmoothingEnabled = true;
+            if (c.imageSmoothingQuality) c.imageSmoothingQuality = 'high';
+            c.drawImage(src, rect.x, rect.y, rect.w, rect.h, 0, 0, w, h);
+            return cv;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function runScan(rect) {
+        const mode = scanMode;
+        scanMode = null;
+        scanPick = false;
+        if (viewEl) viewEl.style.cursor = currentTool === 'move' ? 'grab' : 'crosshair';
+        requestDraw();
+
+        if (mode === 'qr') detectCodes(rect);
+        else readText(rect);
+    }
+
+    let scanMode = null;
+
+    // --- 2.4 QR и штрих-коды (только если API есть) ------------------------
+    function barcodeSupported() {
+        return typeof window.BarcodeDetector === 'function';
+    }
+
+    function detectCodes(rect) {
+        if (!barcodeSupported()) {
+            toast('BarcodeDetector недоступен в этом браузере');
+            return;
+        }
+        const cv = cropRegion(rect, 1);
+        if (!cv) { toast('Не удалось вырезать область'); return; }
+
+        let formats = [];
+        try {
+            if (BarcodeDetector.getSupportedFormats) {
+                formats = ['qr_code', 'ean_13', 'ean_8', 'code_128', 'code_39', 'upc_a', 'upc_e', 'itf', 'pdf417', 'data_matrix'];
+            }
+        } catch (e) { formats = []; }
+
+        const go = (fmts) => {
+            let det;
+            try {
+                det = fmts && fmts.length ? new BarcodeDetector({ formats: fmts }) : new BarcodeDetector();
+            } catch (e) {
+                try { det = new BarcodeDetector(); } catch (e2) {
+                    toast('Детектор кодов недоступен');
+                    return;
+                }
+            }
+            det.detect(cv).then((codes) => {
+                if (!win) return;
+                if (!codes || !codes.length) {
+                    announce('Код не распознан. Попробуйте выделить плотнее или крупнее.');
+                    return;
+                }
+                showCodeResult(codes[0]);
+            }).catch(() => {
+                if (!win) return;
+                toast('Не удалось распознать код');
+            });
+        };
+
+        if (formats.length) {
+            go(formats);
+        } else {
+            go(null);
+        }
+    }
+
+    function showCodeResult(code) {
+        if (!win) return;
+        const raw = String(code.rawValue || '');
+        const fmt = String(code.format || '');
+        closeMenu();
+        const panel = openPanel(analysisBtn, 'Распознанный код', (p) => {
+            const val = mk('div', {
+                padding: '2px 6px 6px', wordBreak: 'break-all',
+                font: '12px ui-monospace, monospace', color: '#cfe9ff',
+            });
+            val.textContent = raw || '(пусто)';
+            p.appendChild(val);
+            menuNote(p, 'Формат: ' + fmt);
+
+            menuItem(p, {
+                label: 'Копировать значение', icon: 'copy',
+                onClick: () => copyText(raw, 'Значение скопировано'),
+            });
+
+            const isUrl = /^https?:\/\//i.test(raw) || /^www\./i.test(raw);
+            if (isUrl) {
+                const host = safeHost(raw);
+                menuItem(p, {
+                    label: 'Открыть ссылку', icon: 'arrow',
+                    hint: host || '',
+                    onClick: () => openScannedLink(raw),
+                });
+                menuNote(p, 'Ссылка из кода. Проверьте домен' + (host ? ' (' + host + ')' : '') + ', прежде чем открывать.');
+            }
+        }, { minWidth: 250 });
+    }
+
+    function safeHost(raw) {
+        try {
+            const u = new URL(/^www\./i.test(raw) ? 'https://' + raw : raw);
+            return u.host;
+        } catch (e) { return ''; }
+    }
+
+    function openScannedLink(raw) {
+        const href = /^https?:\/\//i.test(raw) ? raw : ('https://' + raw);
+        const host = safeHost(href);
+        // Ссылка из QR — недоверенная: спрашиваем подтверждение с доменом.
+        const ok = window.confirm(
+            'Открыть ссылку из QR-кода?\n\n' + href +
+            (host ? '\n\nДомен: ' + host : '') +
+            '\n\nОткрывайте, только если доверяете источнику.'
+        );
+        if (!ok) { announce('Открытие ссылки отменено'); return; }
+        try {
+            window.open(href, '_blank', 'noopener,noreferrer');
+        } catch (e) {
+            toast('Не удалось открыть ссылку');
+        }
+    }
+
+    // --- 2.3 Текст: локальный TextDetector или честный фолбэк ---------------
+    function readText(rect) {
+        const cv = cropRegion(rect, 1);
+        if (!cv) { toast('Не удалось вырезать область'); return; }
+
+        if (typeof window.TextDetector === 'function') {
+            let det;
+            try { det = new window.TextDetector(); } catch (e) { det = null; }
+            if (det) {
+                let p;
+                try { p = det.detect(cv); } catch (e) { p = null; }
+                if (p && typeof p.then === 'function') {
+                    p.then((found) => {
+                        if (!win) return;
+                        const blocks = (found || []).map((f) => String(f.rawValue || '')).filter(Boolean);
+                        if (blocks.length) showTextResult(blocks.join('\n'), rect, true);
+                        else textFallback(rect, 'TextDetector не нашёл текст');
+                    }).catch(() => textFallback(rect, 'TextDetector недоступен'));
+                    return;
+                }
+            }
+        }
+        textFallback(rect, 'TextDetector недоступен в этом браузере');
+    }
+
+    function textFallback(rect, why) {
+        const up = cropRegion(rect, OCR_SCALE);
+        if (!up) { toast('Не удалось вырезать область'); return; }
+        const note = (why ? why + '. ' : '') +
+            'Область увеличена в ' + OCR_SCALE + '× и положена в буфер — вставьте её в любой OCR-сервис.';
+        announce('Область увеличена и скопирована');
+        if (!navigator.clipboard || !window.ClipboardItem) {
+            showTextResult('', rect, false, note + ' Копирование картинок не поддерживается.');
+            return;
+        }
+        up.toBlob((blob) => {
+            if (!win || !blob) return;
+            navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+                .then(() => showTextResult('', rect, false, note))
+                .catch(() => showTextResult('', rect, false, note + ' Скопировать не удалось — сохраните PNG.'));
+        }, 'image/png');
+    }
+
+    function showTextResult(text, rect, detected, note) {
+        if (!win) return;
+        closeMenu();
+        openPanel(analysisBtn, detected ? 'Распознанный текст' : 'Текст: увеличенная копия', (p) => {
+            if (text) {
+                const box = document.createElement('textarea');
+                box.value = text;
+                box.readOnly = true;
+                box.rows = Math.min(8, Math.max(2, text.split('\n').length));
+                Object.assign(box.style, {
+                    width: '100%', boxSizing: 'border-box', resize: 'vertical',
+                    background: '#1b1b1b', color: '#e8f2ff', border: '1px solid rgba(255,255,255,0.18)',
+                    borderRadius: '5px', padding: '6px', font: '12px/1.45 ui-monospace, monospace',
+                    outline: 'none',
+                });
+                box.addEventListener('mousedown', (e) => e.stopPropagation());
+                p.appendChild(box);
+                menuItem(p, {
+                    label: 'Копировать текст', icon: 'copy',
+                    onClick: () => copyText(text, 'Текст скопирован'),
+                });
+            }
+            if (note) menuNote(p, note);
+            menuItem(p, {
+                label: 'Выделить другую область', icon: 'scan',
+                onClick: () => { closeMenu(); startScanFor('text'); },
+            });
+        }, { minWidth: 260 });
+    }
+
+    function startScanFor(mode) {
+        scanMode = mode;
+        startScan();
+    }
+
+    // ======================================================================
+    // 3.5 Пресеты экспорта
+    // ======================================================================
+    const FORMAT_META = {
+        png: { mime: 'image/png', ext: 'png', label: 'PNG' },
+        jpeg: { mime: 'image/jpeg', ext: 'jpg', label: 'JPEG' },
+        webp: { mime: 'image/webp', ext: 'webp', label: 'WebP' },
+    };
+
+    function currentMime() {
+        return (FORMAT_META[exportFormat] || FORMAT_META.png).mime;
+    }
+
+    function canvasToType(canvas, type, quality) {
+        return new Promise((resolve, reject) => {
+            try {
+                canvas.toBlob((b) => {
+                    if (b) resolve(b);
+                    else reject(new Error('empty'));
+                }, type || 'image/png', quality);
+            } catch (e) {
+                reject(e);
+            }
+        });
+    }
+
+    function fileNameForFormat(url, fmt) {
+        const base = safeFileName(url).replace(/\.png$/i, '');
+        const ext = (FORMAT_META[fmt] || FORMAT_META.png).ext;
+        return base + '.' + ext;
+    }
+
+    function exportAs(fmt) {
+        if (!imgEl) return;
+        exportFormat = (FORMAT_META[fmt] ? fmt : 'png');
+        storeSet('img_mag_format', exportFormat);
+        const meta = FORMAT_META[exportFormat];
+        resolveExportCanvas().then((res) => {
+            if (!win) return;
+            if (!res.canvas) { exportError(res); return; }
+            return canvasToType(res.canvas, meta.mime, meta.quality || exportQuality)
+                .then((blob) => {
+                    const a = document.createElement('a');
+                    const href = URL.createObjectURL(blob);
+                    a.href = href;
+                    a.download = fileNameForFormat(imageUrl, exportFormat);
+                    a.style.display = 'none';
+                    rootEl().appendChild(a);
+                    a.click();
+                    setTimeout(() => {
+                        try { a.remove(); } catch (e) { /* ignore */ }
+                        URL.revokeObjectURL(href);
+                    }, 4000);
+                    toast('Сохранено: ' + a.download);
+                })
+                .catch(() => {
+                    // WebP/JPEG может не поддерживаться — честно откатываемся на PNG
+                    if (exportFormat !== 'png') {
+                        toast(meta.label + ' не поддерживается, сохраняю PNG');
+                        exportFormat = 'png';
+                        storeSet('img_mag_format', 'png');
+                        exportAs('png');
+                    } else {
+                        toast('Не удалось подготовить файл');
+                    }
+                });
+        }).catch(() => toast(TAINT_MSG));
+    }
+
+    function copyAsFormat(fmt) {
+        if (!imgEl) return;
+        const meta = FORMAT_META[fmt] || FORMAT_META.png;
+        resolveExportCanvas().then((res) => {
+            if (!win) return;
+            if (!res.canvas) { exportError(res); return; }
+            if (!navigator.clipboard || !window.ClipboardItem) {
+                toast('Браузер не поддерживает копирование изображений');
+                return;
+            }
+            return canvasToType(res.canvas, meta.mime, exportQuality).then((blob) => {
+                navigator.clipboard.write([new ClipboardItem({ [meta.mime]: blob })])
+                    .then(() => toast('Скопировано как ' + meta.label))
+                    .catch(() => toast('Не удалось скопировать ' + meta.label));
+            }).catch(() => toast('Не удалось подготовить изображение'));
+        }).catch(() => toast(TAINT_MSG));
+    }
+
+    function openExportMenu(anchorBtn) {
+        openPanel(anchorBtn, 'Экспорт', (p) => {
+            for (const fmt of ['png', 'jpeg', 'webp']) {
+                const meta = FORMAT_META[fmt];
+                menuItem(p, {
+                    label: 'Сохранить ' + meta.label, icon: 'save',
+                    hint: (exportFormat === fmt ? '• ' : '') + '.' + meta.ext,
+                    check: exportFormat === fmt,
+                    onClick: () => exportAs(fmt),
+                });
+            }
+            if (exportFormat !== 'png') {
+                menuSep(p);
+                const q = mk('div', { padding: '2px 8px 6px' });
+                const lbl = mk('div', { fontSize: '11px', opacity: '0.7', marginBottom: '4px' });
+                lbl.textContent = 'Качество: ' + Math.round(exportQuality * 100) + '%';
+                const rng = document.createElement('input');
+                rng.type = 'range';
+                rng.min = '30';
+                rng.max = '100';
+                rng.step = '1';
+                rng.value = String(Math.round(exportQuality * 100));
+                rng.setAttribute('aria-label', 'Качество экспорта');
+                Object.assign(rng.style, { width: '100%', accentColor: '#4da3ff' });
+                rng.addEventListener('input', () => {
+                    lbl.textContent = 'Качество: ' + rng.value + '%';
+                });
+                rng.addEventListener('change', () => {
+                    exportQuality = clamp(parseInt(rng.value, 10) / 100, 0.3, 1);
+                    storeSet('img_mag_quality', exportQuality);
+                });
+                rng.addEventListener('mousedown', (e) => e.stopPropagation());
+                q.append(lbl, rng);
+                p.appendChild(q);
+            }
+            menuSep(p);
+            menuItem(p, {
+                label: 'Копировать как PNG', icon: 'copy', hint: 'Ctrl+C',
+                onClick: () => copyAsFormat('png'),
+            });
+            menuItem(p, {
+                label: 'Копировать как JPEG', icon: 'copy',
+                onClick: () => copyAsFormat('jpeg'),
+            });
+            menuNote(p, 'Формат запоминается. Ctrl+S использует выбранный формат.');
+        }, { minWidth: 220 });
+    }
+
+    // ======================================================================
+    // Анализ: палитра, перспектива, текст, коды
+    // ======================================================================
+    function openAnalysisMenu(anchorBtn) {
+        openPanel(anchorBtn, 'Анализ изображения', (p) => {
+            menuItem(p, {
+                label: 'Палитра изображения', icon: 'palette',
+                check: imagePalette.length > 0,
+                onClick: () => openPalettePanel(analysisBtn),
+            });
+            menuSep(p);
+            menuItem(p, {
+                label: perspCanvas ? 'Показать оригинал' : 'Выпрямить перспективу',
+                icon: 'warp',
+                hint: perspCanvas ? '' : '4 угла',
+                onClick: () => {
+                    if (perspCanvas) restorePerspective();
+                    else beginPerspective();
+                },
+            });
+            if (perspCanvas) {
+                menuItem(p, {
+                    label: 'Выпрямить заново', icon: 'warp',
+                    onClick: () => beginPerspective(),
+                });
+            }
+            menuSep(p);
+            menuItem(p, {
+                label: 'Прочитать текст', icon: 'scan',
+                hint: typeof window.TextDetector === 'function' ? 'локально' : '4× в буфер',
+                onClick: () => startScanFor('text'),
+            });
+            if (barcodeSupported()) {
+                menuItem(p, {
+                    label: 'QR-код / штрих-код', icon: 'qr',
+                    hint: 'локально',
+                    onClick: () => startScanFor('qr'),
+                });
+            }
+            if (!barcodeSupported() && typeof window.TextDetector !== 'function') {
+                menuNote(p, 'Локальных детекторов нет: текст увеличиваем в ' + OCR_SCALE + '× и копируем в буфер.');
+            }
+        }, { minWidth: 230 });
+    }
+
+    // ======================================================================
+    // «Ещё»: закрепление, прозрачность, «только смотреть», сетка
+    // ======================================================================
+    function openMoreMenu(anchorBtn) {
+        openPanel(anchorBtn, 'Вид и окно', (p) => {
+            menuItem(p, {
+                label: pinned ? 'Открепить окно' : 'Закрепить окно', icon: 'pin', hint: 'Shift+P',
+                check: pinned,
+                onClick: () => togglePin(),
+            });
+            menuItem(p, {
+                label: 'Полупрозрачное окно', icon: 'more',
+                check: translucent,
+                onClick: () => toggleTranslucent(),
+            });
+            menuItem(p, {
+                label: 'Режим «только смотреть»', icon: 'more',
+                check: ghostMode,
+                onClick: () => toggleGhost(),
+            });
+            menuSep(p);
+            menuItem(p, {
+                label: 'Сетка пикселей (от 800%)', icon: 'grid', hint: 'G',
+                check: pixelGrid,
+                onClick: () => togglePixelGrid(),
+            });
+            menuItem(p, {
+                label: 'Сбросить вид (вписать)', icon: 'fit', hint: 'Ctrl+1',
+                onClick: () => fitImage(),
+            });
+            menuItem(p, {
+                label: 'Убрать выделение фигуры', icon: 'undo',
+                onClick: () => { selShape = null; invalidate(); announce('Выделение снято'); },
+            });
+        }, { minWidth: 230 });
+    }
+
+    function togglePixelGrid(force) {
+        const next = (force === undefined) ? !pixelGrid : !!force;
+        pixelGrid = next;
+        storeSet('img_mag_grid', pixelGrid ? '1' : '0');
+        baseRev++;
+        clearBaseCache();
+        invalidate();
+        announce(pixelGrid
+            ? 'Сетка пикселей включена (видна от ' + Math.round(PIXEL_GRID_FROM * 100) + '%)'
+            : 'Сетка пикселей выключена');
+    }
+
+    // ======================================================================
+    // 4.2 Правка выбранной фигуры
+    // ======================================================================
+    function openShapeMenu(shape, clientX, clientY) {
+        if (!win || !shape) return;
+        closeMenu();
+        const panel = document.createElement('div');
+        Object.assign(panel.style, {
+            position: 'fixed', zIndex: '2147483647', minWidth: '180px',
+            background: '#2b2b2b', color: '#eee', borderRadius: '8px',
+            boxShadow: '0 10px 28px rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.12)',
+            padding: '6px', font: '12.5px/1.4 sans-serif', boxSizing: 'border-box',
+        });
+        panel.setAttribute('role', 'menu');
+        panel.addEventListener('mousedown', (e) => e.stopPropagation());
+        panel.addEventListener('click', (e) => e.stopPropagation());
+
+        const head = mk('div', { padding: '2px 6px 5px', opacity: '0.65', fontSize: '11.5px' });
+        head.textContent = 'Фигура: ' + shapeTypeLabel(shape.type);
+        panel.appendChild(head);
+
+        menuItem(panel, {
+            label: 'Удалить фигуру', icon: 'trash', hint: 'Del',
+            onClick: () => deleteShape(shape),
+        });
+        menuItem(panel, {
+            label: 'Дублировать', icon: 'copy', hint: 'Alt+drag',
+            onClick: () => {
+                const dup = cloneShape(shape, shape.width ? 16 / scale : 12, 12);
+                if (!dup) return;
+                lastShape = dup;
+                pushAnnotation(dup);
+                selShape = dup;
+                invalidate();
+                announce('Фигура продублирована');
+            },
+        });
+        if (shape.type === 'text') {
+            menuItem(panel, {
+                label: 'Изменить текст', icon: 'text',
+                onClick: () => editTextShape(shape),
+            });
+        }
+        menuItem(panel, {
+            label: 'Другой цвет…', icon: 'palette',
+            onClick: () => {
+                shape.color = penColor;
+                baseRev++;
+                clearBaseCache();
+                commit();
+                announce('Цвет фигуры изменён');
+            },
+        });
+
+        rootEl().appendChild(panel);
+        menuEl = panel;
+        menuAnchorBtn = null;
+
+        const w = panel.offsetWidth, h = panel.offsetHeight;
+        panel.style.left = clamp(clientX, 8, Math.max(8, innerWidth - w - 8)) + 'px';
+        panel.style.top = clamp(clientY, 8, Math.max(8, innerHeight - h - 8)) + 'px';
+    }
+
+    function shapeTypeLabel(type) {
+        const map = {
+            pen: 'карандаш', line: 'линия', arrow: 'стрелка',
+            rect: 'прямоугольник', circle: 'эллипс', text: 'текст',
+        };
+        return map[type] || type;
+    }
+
+    // Правка текстовой аннотации: убираем фигуру и открываем тот же редактор
+    // в её точке с её текстом — без нового «фиксированного» бага.
+    function editTextShape(shape) {
+        if (!shape || shape.type !== 'text') return;
+        const screenSize = shape.size * scale;
+        const left = shape.x * scale + tx;
+        const top = shape.y * scale + ty;
+        const idx = annotations.indexOf(shape);
+        if (idx === -1) return;
+        annotations = annotations.slice(0, idx).concat(annotations.slice(idx + 1));
+        selShape = null;
+        baseRev++;
+        clearBaseCache();
+        invalidate();
+
+        const oldColor = penColor;
+        penColor = shape.color || penColor;
+        openTextEditor(left, top, shape.text);
+        penColor = oldColor;
+    }
+
     // --- Экспорт ------------------------------------------------------------
     function checkExportable() {
         const iw = imageW(), ih = imageH();
@@ -1660,7 +3870,7 @@
             c.width = 1;
             c.height = 1;
             const x = c.getContext('2d');
-            x.drawImage(imgEl, 0, 0, 1, 1);
+            x.drawImage(sourceEl(), 0, 0, 1, 1);
             x.getImageData(0, 0, 1, 1);
             canExport = true;
         } catch (e) {
@@ -1697,6 +3907,11 @@
             c.height = ih;
             const x = c.getContext('2d');
             if (!x) return { canvas: null, reason: 'load' };
+            if (src === imgEl && exportFormat !== 'png') {
+                // JPEG не умеет альфу: подложка, иначе прозрачные края станут чёрными
+                x.fillStyle = '#ffffff';
+                x.fillRect(0, 0, iw, ih);
+            }
             x.drawImage(src, 0, 0, iw, ih);
             // аннотации хранятся в координатах картинки → scale=1, tx=ty=0
             for (let i = 0; i < annotations.length; i++) {
@@ -1723,6 +3938,9 @@
 
     function resolveExportCanvas() {
         if (!imgEl) return Promise.resolve({ canvas: null, reason: 'load' });
+        // 1.5: экспорт уже выпрямленной картинки
+        if (perspCanvas) return Promise.resolve(buildExportCanvas(perspCanvas));
+
         if (canExport === null) checkExportable();
 
         if (canExport === true) return Promise.resolve(buildExportCanvas(imgEl));
@@ -1776,6 +3994,11 @@
 
     function savePNG() {
         if (!imgEl) return;
+        // Ctrl+S и кнопка «Сохранить» используют выбранный формат (3.5)
+        if (exportFormat && exportFormat !== 'png') {
+            exportAs(exportFormat);
+            return;
+        }
         resolveExportCanvas().then((res) => {
             if (!win) return;
             if (!res.canvas) { exportError(res); return; }
@@ -1801,6 +4024,12 @@
         v: 'move', p: 'pen', l: 'line', a: 'arrow', r: 'rect', e: 'circle', t: 'text'
     };
 
+    // 4.1: цифры — инструменты, как в большинстве редакторов
+    const TOOL_DIGITS = {
+        '1': 'pen', '2': 'line', '3': 'arrow', '4': 'rect', '5': 'circle', '6': 'text',
+        '7': 'move',
+    };
+
     function onKeyUp(e) {
         if (e.code === 'Space' || e.key === ' ') {
             spaceDown = false;
@@ -1808,6 +4037,12 @@
                 viewEl.style.cursor = currentTool === 'move' ? 'grab' : 'crosshair';
             }
         }
+    }
+
+    function panBy(dx, dy) {
+        tx += dx;
+        ty += dy;
+        apply();
     }
 
     function onKey(e) {
@@ -1842,6 +4077,15 @@
             e.preventDefault();
             e.stopPropagation();
             if (helpVisible()) { toggleHelp(false); return; }
+            if (menuEl) { closeMenu(); return; }
+            if (perspPicking) { cancelPerspective(); return; }
+            if (scanPick) {
+                scanPick = false;
+                scanRect = null;
+                requestDraw();
+                return;
+            }
+            if (selShape) { selShape = null; invalidate(); return; }
             closeWindow();
             return;
         }
@@ -1896,9 +4140,65 @@
 
         if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
 
+        // 4.1: Tab — ловушка фокуса внутри окна
+        if (e.key === 'Tab') {
+            e.preventDefault();
+            e.stopPropagation();
+            trapFocus(e);
+            return;
+        }
+
         if (e.key === '?') {
             e.preventDefault();
             toggleHelp();
+            return;
+        }
+
+        if (e.key === 'Enter') {
+            // 4.1: Enter активирует кнопку даже там, где браузер не
+            // синтезирует клик сам (и не уводит фокус на страницу)
+            if (target && target.tagName === 'BUTTON' && win.contains(target)) {
+                e.preventDefault();
+                e.stopPropagation();
+                try { target.click(); } catch (err) { /* ignore */ }
+                return;
+            }
+            // Enter на кнопке обрабатывает сама кнопка; здесь — фокус на окне
+            if (target === win || target === drawEl) {
+                e.preventDefault();
+                announce('Масштаб ' + Math.round(scale * 100) + '%, инструмент: ' +
+                    shapeToolLabel(currentTool));
+            }
+            return;
+        }
+
+        if (e.key === 'Delete' || e.key === 'Backspace') {
+            if (selShape) {
+                e.preventDefault();
+                e.stopPropagation();
+                deleteShape(selShape);
+                return;
+            }
+        }
+
+        // Стрелки — панорама, Shift — крупными шагами
+        const step = e.shiftKey ? 80 : 24;
+        if (e.key === 'ArrowLeft') { e.preventDefault(); panBy(step, 0); return; }
+        if (e.key === 'ArrowRight') { e.preventDefault(); panBy(-step, 0); return; }
+        if (e.key === 'ArrowUp') { e.preventDefault(); panBy(0, step); return; }
+        if (e.key === 'ArrowDown') { e.preventDefault(); panBy(0, -step); return; }
+
+        // +/− — зум
+        if (e.key === '+' || e.key === '=' || e.code === 'NumpadAdd') {
+            e.preventDefault();
+            zoomCenter(ZOOM_STEP);
+            announce('Масштаб ' + Math.round(scale * 100) + '%');
+            return;
+        }
+        if (e.key === '-' || e.key === '_' || e.code === 'NumpadSubtract') {
+            e.preventDefault();
+            zoomCenter(1 / ZOOM_STEP);
+            announce('Масштаб ' + Math.round(scale * 100) + '%');
             return;
         }
 
@@ -1912,10 +4212,125 @@
         }
 
         const key = (e.key || '').toLowerCase();
+
+        if (TOOL_DIGITS[key]) {
+            e.preventDefault();
+            setTool(TOOL_DIGITS[key]);
+            announce('Инструмент: ' + shapeToolLabel(currentTool));
+            return;
+        }
+        if (key === 'c' || key === 'с') {
+            e.preventDefault();
+            focusColorInput();
+            return;
+        }
+        if (key === 'g' || key === 'п') {
+            e.preventDefault();
+            togglePixelGrid();
+            return;
+        }
+        if (key === 'p' && !e.shiftKey && !e.ctrlKey) {
+            // P остаётся карандашом (старая привычка), закрепление — Shift+P
+            e.preventDefault();
+            setTool('pen');
+            return;
+        }
+        if ((key === 'p' || key === 'з') && e.shiftKey) {
+            e.preventDefault();
+            togglePin();
+            return;
+        }
         if (TOOL_KEYS[key]) {
             e.preventDefault();
             setTool(TOOL_KEYS[key]);
+            return;
         }
+    }
+
+    function shapeToolLabel(name) {
+        const map = {
+            move: 'перемещение', pen: 'карандаш', line: 'линия', arrow: 'стрелка',
+            rect: 'прямоугольник', circle: 'эллипс', text: 'текст',
+        };
+        return map[name] || name;
+    }
+
+    function focusColorInput() {
+        if (!colorInputEl) return;
+        try {
+            colorInputEl.focus({ preventScroll: true });
+            colorInputEl.click();
+        } catch (e) { /* системный пикер может быть недоступен */ }
+        announce('Цвет: ' + penColor.toUpperCase());
+    }
+
+    // --- 6.3 Высокий DPI и смена монитора ---------------------------------
+    // При переносе окна на другой монитор devicePixelRatio меняется без resize.
+    // matchMedia('(resolution: Xdppx)') ловит именно это.
+    function watchDpr() {
+        dropDprMedia();
+        if (typeof window.matchMedia !== 'function') return;
+        try {
+            mqDpr = window.matchMedia('(resolution: ' + (window.devicePixelRatio || 1) + 'dppx)');
+            const handler = () => {
+                if (!win) return;
+                // Пересоздаём запрос на новое значение и перестраиваем холст.
+                watchDpr();
+                resyncDpr();
+            };
+            if (mqDpr.addEventListener) mqDpr.addEventListener('change', handler);
+            else if (mqDpr.addListener) mqDpr.addListener(handler);
+            mqDpr._handler = handler;
+        } catch (e) { mqDpr = null; }
+    }
+
+    // Пересборка холста под новый DPR с сохранением точки в центре.
+    function resyncDpr() {
+        if (!win || !drawEl) return;
+        baseValid = false;
+        clearBaseCache();
+        if (fitCanvas()) {
+            const ix = scale ? (viewW / 2 - tx) / scale : 0;
+            const iy = scale ? (viewH / 2 - ty) / scale : 0;
+            tx = viewW / 2 - ix * scale;
+            ty = viewH / 2 - iy * scale;
+        }
+        requestDraw();
+    }
+
+    // matchMedia не всегда срабатывает при смене монитора (окно не меняет
+    // размер). Дешёвая страховка: раз в секунду сверяем сам devicePixelRatio.
+    function startDprPoll() {
+        stopDprPoll();
+        dprPoll = setInterval(() => {
+            if (!win) { stopDprPoll(); return; }
+            const now = clamp(window.devicePixelRatio || 1, 1, DPR_MAX);
+            if (Math.abs(now - dpr) > 0.01) {
+                watchDpr();
+                resyncDpr();
+            }
+        }, 800);
+    }
+
+    function stopDprPoll() {
+        if (dprPoll) { clearInterval(dprPoll); dprPoll = 0; }
+    }
+
+    // Снимаем только matchMedia-подписку; опрос DPR живёт отдельно.
+    function dropDprMedia() {
+        if (!mqDpr) return;
+        try {
+            if (mqDpr._handler) {
+                if (mqDpr.removeEventListener) mqDpr.removeEventListener('change', mqDpr._handler);
+                else if (mqDpr.removeListener) mqDpr.removeListener(mqDpr._handler);
+            }
+        } catch (e) { /* ignore */ }
+        mqDpr = null;
+    }
+
+    function unwatchDpr() {
+        stopDprPoll();
+        dropDprMedia();
     }
 
     // --- Закрытие -----------------------------------------------------------
@@ -1923,6 +4338,8 @@
         if (!win) return;
 
         persistNow();
+        closeMenu();
+        unwatchDpr();
 
         document.removeEventListener('mousemove', onMouseMove, true);
         document.removeEventListener('mouseup', onMouseUp, true);
@@ -1958,6 +4375,12 @@
         undoBtn = null;
         redoBtn = null;
         fillBtn = null;
+        pinBtn = null;
+        analysisBtn = null;
+        exportBtn = null;
+        moreBtn = null;
+        quickPaletteEl = null;
+        colorInputEl = null;
         toolButtons = {};
 
         mode = null;
@@ -1977,6 +4400,9 @@
         annotations = [];
         history = [[]];
         histIndex = 0;
+        resetPerFeatureState();
+        baseRev = 0;
+        selShape = null;
     }
 
     // --- Уведомление --------------------------------------------------------
