@@ -4,7 +4,7 @@
 > Pan, zoom, resize the window, and annotate images with drawing tools — pencil, line, arrow,
 > rectangle, ellipse and text — then copy or save the merged result.
 >
-> **Author:** diple_df x claude · **Version:** 3.6.0
+> **Author:** diple_df x claude · **Version:** 3.6.1
 
 <img width="1920" height="1002" alt="image" src="https://github.com/user-attachments/assets/b0d8290d-10ed-4e5c-9b46-43765eacfb5a" />
 
@@ -163,8 +163,8 @@ only respond while the pointer is over the magnifier window.
 
 | File | Script Name | Version | Status |
 |---|---|---|---|
-| `imgMagnifier.user.js` | Image Magnifier | 3.6.0 | Current — installable |
-| `imgMagnifier.js` | Image Magnifier | 3.6.0 | Legacy mirror, identical code |
+| `imgMagnifier.user.js` | Image Magnifier | 3.6.1 | Current — installable |
+| `imgMagnifier.js` | Image Magnifier | 3.6.1 | Legacy mirror, identical code |
 
 > Only the `.user.js` file is referenced by `@downloadURL`/`@updateURL`.
 

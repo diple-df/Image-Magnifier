@@ -4,7 +4,7 @@
 > Панорамирование, масштабирование, изменение размера окна и аннотирование изображений —
 > карандаш, линия, стрелка, прямоугольник, эллипс и текст — с копированием и сохранением объединённого результата.
 >
-> **Автор:** diple_df x claude · **Версия:** 3.6.0
+> **Автор:** diple_df x claude · **Версия:** 3.6.1
 
 <img width="1920" height="1002" alt="image" src="https://github.com/user-attachments/assets/b0d8290d-10ed-4e5c-9b46-43765eacfb5a" />
 
@@ -164,8 +164,8 @@
 
 | Файл | Название скрипта | Версия | Статус |
 |---|---|---|---|
-| `imgMagnifier.user.js` | Image Magnifier | 3.6.0 | Актуальная — для установки |
-| `imgMagnifier.js` | Image Magnifier | 3.6.0 | Зеркало для совместимости, код идентичен |
+| `imgMagnifier.user.js` | Image Magnifier | 3.6.1 | Актуальная — для установки |
+| `imgMagnifier.js` | Image Magnifier | 3.6.1 | Зеркало для совместимости, код идентичен |
 
 > В `@downloadURL`/`@updateURL` указан только `.user.js`.
 
