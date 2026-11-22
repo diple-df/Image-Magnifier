@@ -9,6 +9,12 @@
 
 <img width="1920" height="1002" alt="image" src="https://github.com/user-attachments/assets/b0d8290d-10ed-4e5c-9b46-43765eacfb5a" />
 
+### Демонстрация
+
+![Image Magnifier в работе](docs/demo.gif)
+
+Зум к курсору, рисование по картинке и экспорт — всё прямо на странице.
+
 
 ## Установка
 

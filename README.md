@@ -9,6 +9,12 @@
 
 <img width="1920" height="1002" alt="image" src="https://github.com/user-attachments/assets/b0d8290d-10ed-4e5c-9b46-43765eacfb5a" />
 
+### Demo
+
+![Image Magnifier in action](docs/demo.gif)
+
+Zoom to the cursor, draw on the image, and export — all inside the page.
+
 
 ## Installation
 
