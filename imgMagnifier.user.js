@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Image Magnifier
 // @namespace    https://github.com/diple-df/Image-Magnifier
-// @version      3.10.0
+// @version      3.11.0
 // @description  Двойной Ctrl по изображению открывает его в плавающем окне: зум 5–2000% с привязкой к курсору, панорамирование, инструменты рисования (карандаш, линия, стрелка, прямоугольник, эллипс, текст), палитра изображения, перспективная коррекция, чтение текста и QR, экспорт PNG/JPEG/WebP, отмена/повтор, полностью клавиатурный режим, копирование (Ctrl+C) и сохранение (Ctrl+S)
 // @author       diple_df x claude
 // @match        *://*/*
@@ -103,7 +103,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         const STAMP_KEY = 'img_mag_upd_ts';
         const SEEN_KEY = 'img_mag_upd_seen';
         const DAY = 86400000;
-        const LOCAL_VERSION = '3.10.0';
+        const LOCAL_VERSION = '3.11.0';
 
         function curVer() {
             try {
@@ -114,7 +114,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
             return LOCAL_VERSION;
         }
 
-        // Сравнение по числовым сегментам: 3.10.0 больше 3.9.0 (строкой — нет).
+        // Сравнение по числовым сегментам: 3.11.0 больше 3.9.0 (строкой — нет).
         function cmp(a, b) {
             const pa = String(a || '').split(/[.\-+]/);
             const pb = String(b || '').split(/[.\-+]/);
@@ -570,7 +570,10 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         eraser:  [['path', { d: 'M8.5 20.5H20' }], ['path', { d: 'M4.6 15.9l7.1-7.1a2 2 0 0 1 2.8 0l3.5 3.5a2 2 0 0 1 0 2.8l-4.7 4.7H8.1l-3.5-3.5a2 2 0 0 1 0-2.8z' }], ['path', { d: 'M9.5 11l5.5 5.5' }]],
         export:  [['path', { d: 'M12 15V4' }], ['path', { d: 'M8 8l4-4 4 4' }], ['path', { d: 'M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3' }]],
         grid:    [['rect', { x: 4, y: 4, width: 16, height: 16, rx: 1 }], ['path', { d: 'M12 4v16M4 12h16' }], ['path', { d: 'M8 4v16M16 4v16M4 8h16M4 16h16', opacity: 0.55 }]],
-        more:    [['circle', { cx: 6, cy: 12, r: 1.4 }], ['circle', { cx: 12, cy: 12, r: 1.4 }], ['circle', { cx: 18, cy: 12, r: 1.4 }]]
+        more:    [['circle', { cx: 6, cy: 12, r: 1.4 }], ['circle', { cx: 12, cy: 12, r: 1.4 }], ['circle', { cx: 18, cy: 12, r: 1.4 }]],
+        chevron: [['path', { d: 'M6 9.5l6 6 6-6' }]],
+        grip:    [['circle', { cx: 9, cy: 8, r: 1.1 }], ['circle', { cx: 15, cy: 8, r: 1.1 }], ['circle', { cx: 9, cy: 12, r: 1.1 }], ['circle', { cx: 15, cy: 12, r: 1.1 }], ['circle', { cx: 9, cy: 16, r: 1.1 }], ['circle', { cx: 15, cy: 16, r: 1.1 }]],
+        sliders: [['path', { d: 'M5 8h5M14 8h5M5 16h9M18 16h1' }], ['circle', { cx: 12, cy: 8, r: 2 }], ['circle', { cx: 16, cy: 16, r: 2 }]]
     };
 
     function makeIcon(spec) {
@@ -608,10 +611,15 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
     let textInput = null;
     let zoomLabel = null;
     let undoBtn = null, redoBtn = null, fillBtn = null;
-    let pinBtn = null, analysisBtn = null, exportBtn = null, moreBtn = null;
-    let quickPaletteEl = null;
+    let pinBtn = null, moreBtn = null;
     let toolButtons = {};
     let imageUrl = '';
+
+    // Новый интерфейс: рейка категорий, панель свойств, строка состояния.
+    let railEl = null;        // левая рейка с категориями
+    let propsEl = null;       // правая панель свойств
+    let statusBarEl = null;   // строка состояния под картинкой
+    let propsFolded = false;  // панель свойств свёрнута в полоску
 
     let scale = 1, tx = 0, ty = 0;
     let currentTool = 'move';
@@ -652,7 +660,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
     let imagePalette = [];       // доминирующие цвета (1.4)
     let quickRecent = [];        // последние использованные цвета (4.3)
     let quickPins = [];          // закреплённые быстрые цвета (4.3)
-    let colorInputEl = null;     // <input type=color>
+    // (нативный <input type=color> убран: цвет выбирается HSV-кругом)     // <input type=color>
     let pinned = false;          // окно не закрывается от клика мимо (5.3)
     let ghostMode = false;       // «только смотреть»: клики сквозь картинку
     let translucent = false;     // полупрозрачное окно
@@ -775,6 +783,12 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
 
     // --- Кнопки -----------------------------------------------------------
     function decorateButton(b) {
+        // У кнопок с классом .imv-btn оформление живёт в <style>, поэтому
+        // инлайновые наведения им не нужны и только перебили бы CSS.
+        if (b.classList && b.classList.contains('imv-btn')) {
+            b.addEventListener('mousedown', (e) => e.stopPropagation());
+            return b;
+        }
         b.addEventListener('mouseenter', () => {
             if (b.dataset.active !== '1' && b.dataset.disabled !== '1') {
                 b.style.background = 'rgba(255,255,255,0.15)';
@@ -791,7 +805,16 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
     }
 
     function setBtnActive(b, on) {
+        if (!b) return;
         b.dataset.active = on ? '1' : '';
+        // Кнопки рейки и шапки одеваются классами из <style>, остальным
+        // (кнопки старых поповеров) по-прежнему нужен инлайновый фон.
+        if (b.classList && b.classList.contains('imv-btn')) {
+            b.classList.toggle('is-on', !!on);
+            if (on) b.setAttribute('aria-pressed', 'true');
+            else if (b.hasAttribute('data-tool')) b.setAttribute('aria-pressed', 'false');
+            return;
+        }
         b.style.background = on ? 'rgba(0,120,212,0.95)' : 'transparent';
     }
 
@@ -813,6 +836,22 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
 
     // Кнопки, которые обязаны оставаться видимыми в узком окне:
     // сжимаем заголовок и подпись масштаба, а не прячем управление.
+    // Снимает оформление, заданное инлайново в iconButton(), чтобы кнопку
+    // полностью оформил класс из <style> (иначе :hover не работает).
+    function bareButton(b, cls) {
+        if (!b) return b;
+        if (cls) b.className = cls;
+        b.style.background = '';
+        b.style.width = '';
+        b.style.height = '';
+        b.style.borderRadius = '';
+        b.style.display = '';
+        b.style.alignItems = '';
+        b.style.justifyContent = '';
+        b.style.outline = '';
+        return b;
+    }
+
     function compactButton(b) {
         b.dataset.compact = '1';
         b.style.width = '26px';
@@ -1002,14 +1041,13 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         if (!rgb) return;
         penColor = rgbToHex(rgb.r, rgb.g, rgb.b).toLowerCase();
         storeSet('img_mag_color', penColor);
-        if (colorInputEl) colorInputEl.value = penColor;
+        if (hsvRefs) syncColorUi();
         if (textInput) {
             textInput.style.color = penColor;
             textInput.style.caretColor = penColor;
             textInput.style.boxShadow = '0 0 0 1px ' + penColor + ', 0 1px 6px rgba(0,0,0,0.5)';
         }
         pushRecentColor(penColor);
-        if (quickPaletteEl) refreshQuickPalette();
         if (!quiet) {
             /* цвет уже применён; перерисовка не нужна до следующего штриха */
         }
@@ -1024,59 +1062,6 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         }
         quickRecent = next.slice(0, QUICK_RECENT);
         saveQuickColors();
-    }
-
-    function swatchButton(hex, tip, onClick, size) {
-        const b = document.createElement('button');
-        b.type = 'button';
-        const s = size || 16;
-        Object.assign(b.style, {
-            width: s + 'px', height: s + 'px', padding: '0', flex: '0 0 auto',
-            background: hex, border: '1px solid rgba(0,0,0,0.55)',
-            boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.22)',
-            borderRadius: '3px', cursor: 'pointer', outline: 'none',
-        });
-        b.title = tip;
-        b.setAttribute('aria-label', tip);
-        b.addEventListener('click', (e) => { e.stopPropagation(); onClick(hex, b); });
-        b.addEventListener('focus', () => { b.style.outline = '2px solid #4da3ff'; b.style.outlineOffset = '1px'; });
-        b.addEventListener('blur', () => { b.style.outline = 'none'; });
-        b.addEventListener('mousedown', (e) => e.stopPropagation());
-        return b;
-    }
-
-    // 5 закреплённых цветов + последние использованные, одним кликом
-    function buildQuickPalette() {
-        const wrap = document.createElement('div');
-        Object.assign(wrap.style, {
-            display: 'flex', alignItems: 'center', gap: '3px', flex: '0 0 auto',
-            padding: '0 1px',
-        });
-        wrap.setAttribute('role', 'group');
-        wrap.setAttribute('aria-label', 'Быстрые цвета');
-        refreshQuickPalette(wrap);
-        return wrap;
-    }
-
-    function refreshQuickPalette(wrap) {
-        const el = wrap || quickPaletteEl;
-        if (!el) return;
-        while (el.firstChild) el.removeChild(el.firstChild);
-        quickPins.forEach((c) => {
-            el.appendChild(swatchButton(c, 'Цвет ' + c.toUpperCase() + ' (клик — выбрать)', (hex) => {
-                setPenColor(hex);
-                announce('Цвет ' + hex.toUpperCase());
-            }));
-        });
-        quickRecent.forEach((c) => {
-            if (quickPins.indexOf(c) !== -1) return;
-            const b = swatchButton(c, 'Недавний ' + c.toUpperCase(), (hex) => {
-                setPenColor(hex);
-                announce('Цвет ' + hex.toUpperCase());
-            }, 13);
-            b.style.borderRadius = '50%';
-            el.appendChild(b);
-        });
     }
 
     // --- Закрепление и прозрачность (5.3) ----------------------------------
@@ -1155,8 +1140,1141 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         try { list[next].focus({ preventScroll: true }); } catch (err) { /* ignore */ }
     }
 
+    // ======================================================================
+    // Интерфейс: рейка категорий, панель свойств, строка состояния
+    // ======================================================================
+    const UI_STORE_KEY = 'img_mag_ui';
+
+    const RAIL_CATS = [
+        { id: 'draw',      label: 'Рисование',     hint: 'кисти и фигуры' },
+        { id: 'recognize', label: 'Распознавание', hint: 'текст, коды, перспектива' },
+        { id: 'analyze',   label: 'Анализ',        hint: 'цвета и статистика' },
+        { id: 'file',      label: 'Файл',          hint: 'копировать и сохранить' },
+        { id: 'edit',      label: 'История',       hint: 'отмена и очистка' },
+    ];
+
+    const RAIL_ACTS = [
+        { id: 'ocr',        cat: 'recognize', label: 'Текст с выделения',      icon: 'scan',    hint: 'Выделите область с текстом' },
+        { id: 'qr',         cat: 'recognize', label: 'QR и штрихкод',          icon: 'qr',      hint: 'Выделите код' },
+        { id: 'persp',      cat: 'recognize', label: 'Выпрямить перспективу',  icon: 'warp',    hint: 'Поставьте четыре угла' },
+        { id: 'palette',    cat: 'analyze',   label: 'Палитра картинки',       icon: 'palette', hint: 'Главные цвета снимка' },
+        { id: 'analysis',   cat: 'analyze',   label: 'Анализ изображения',     icon: 'scan',    hint: 'Яркость и контраст' },
+        { id: 'grid',       cat: 'analyze',   label: 'Пиксельная сетка',       icon: 'grid',    hint: 'От 800%' },
+        { id: 'copy',       cat: 'file',      label: 'Копировать',             icon: 'copy',    hint: 'Ctrl+C' },
+        { id: 'save',       cat: 'file',      label: 'Сохранить',              icon: 'save',    hint: 'Ctrl+S' },
+        { id: 'export',     cat: 'file',      label: 'Формат и качество',      icon: 'export',  hint: 'PNG, JPEG, WebP' },
+        { id: 'undo',       cat: 'edit',      label: 'Отменить',               icon: 'undo',    hint: 'Ctrl+Z' },
+        { id: 'redo',       cat: 'edit',      label: 'Повторить',              icon: 'redo',    hint: 'Ctrl+Shift+Z' },
+        { id: 'clear',      cat: 'edit',      label: 'Очистить всё',           icon: 'trash',   hint: 'Снять все пометки' },
+    ];
+
+    const UI_GROUPS = [
+        { id: 'rail',      label: 'Рейка инструментов', hint: 'слева' },
+        { id: 'props',     label: 'Панель свойств',     hint: 'справа' },
+        { id: 'statusbar', label: 'Строка состояния',   hint: 'снизу' },
+    ];
+
+    const UI_PRESETS = [
+        { id: 'full', label: 'Всё видно' },
+        { id: 'view', label: 'Только просмотр' },
+        { id: 'draw', label: 'Только рисование' },
+    ];
+
+    function defaultUi() {
+        const cats = {}, tools = {}, acts = {}, groups = {}, collapsed = {};
+        RAIL_CATS.forEach((c) => { cats[c.id] = true; });
+        ['move', 'pen', 'line', 'arrow', 'rect', 'circle', 'text', 'eraser'].forEach((t) => { tools[t] = true; });
+        RAIL_ACTS.forEach((a) => { acts[a.id] = true; });
+        UI_GROUPS.forEach((g) => { groups[g.id] = true; });
+        return {
+            cats: cats, tools: tools, acts: acts, groups: groups,
+            order: RAIL_CATS.map((c) => c.id), collapsed: collapsed,
+            preset: 'full',
+        };
+    }
+
+    function cloneUi(src) {
+        const d = defaultUi();
+        const o = src && typeof src === 'object' ? src : {};
+        const take = (dst, s) => {
+            if (!s || typeof s !== 'object') return;
+            for (const k in dst) if (typeof s[k] === 'boolean') dst[k] = s[k];
+        };
+        take(d.cats, o.cats); take(d.tools, o.tools); take(d.acts, o.acts); take(d.groups, o.groups);
+        if (Array.isArray(o.order)) {
+            const seen = {};
+            const order = [];
+            o.order.forEach((id) => {
+                if (d.cats[id] !== undefined && !seen[id]) { order.push(id); seen[id] = 1; }
+            });
+            RAIL_CATS.forEach((c) => { if (!seen[c.id]) order.push(c.id); });
+            d.order = order;
+        }
+        if (o.collapsed && typeof o.collapsed === 'object') {
+            for (const k in o.collapsed) if (typeof o.collapsed[k] === 'boolean') d.collapsed[k] = o.collapsed[k];
+        }
+        if (typeof o.preset === 'string') d.preset = o.preset;
+        return d;
+    }
+
+    let uiCfg = null;
+
+    function loadUiCfg() {
+        if (uiCfg) return uiCfg;
+        let raw = null;
+        try { raw = storeGet(UI_STORE_KEY); } catch (e) { raw = null; }
+        if (typeof raw === 'string' && raw) {
+            try { raw = JSON.parse(raw); } catch (e) { raw = null; }
+        }
+        uiCfg = cloneUi(raw);
+        return uiCfg;
+    }
+
+    function saveUiCfg() {
+        if (!uiCfg) return;
+        try { storeSet(UI_STORE_KEY, JSON.stringify(uiCfg)); } catch (e) { /* ignore */ }
+    }
+
+    function catLabel(id) {
+        for (let i = 0; i < RAIL_CATS.length; i++) if (RAIL_CATS[i].id === id) return RAIL_CATS[i].label;
+        return id;
+    }
+
+    // --- Стили окна --------------------------------------------------------
+    // Один <style> с классам вместо десятков inline-стилей. Trusted Types:
+    // только textContent, никакого innerHTML.
+    function injectWinCss() {
+        if (document.getElementById('img-mag-css')) return;
+        const css = [
+            '#img-mag-window{--imv-bar:#1e2228;--imv-rail:#191d22;--imv-props:#1a1e24;--imv-card:#232830;',
+            '--imv-line:rgba(255,255,255,.09);--imv-line2:rgba(255,255,255,.16);--imv-fg:#e9edf3;',
+            '--imv-fg2:#98a1ad;--imv-fg3:#6d7683;--imv-accent:#2ec4b6;}',
+            '#img-mag-window button{font:inherit;}',
+            '#img-mag-window .imv-btn{background:transparent;color:#fff;border:none;cursor:pointer;',
+            'width:30px;height:26px;padding:0;border-radius:6px;display:flex;align-items:center;',
+            'justify-content:center;outline:none;flex:0 0 auto;}',
+            '#img-mag-window .imv-btn:hover{background:rgba(255,255,255,.14);}',
+            '#img-mag-window .imv-btn:focus-visible{outline:2px solid #4da3ff;outline-offset:1px;}',
+            '#img-mag-window .imv-btn.is-on{background:rgba(46,196,182,.22);color:#8ef0e4;}',
+            '#img-mag-window .imv-btn[disabled],#img-mag-window .imv-btn[aria-disabled="true"]{opacity:.35;cursor:default;}',
+            '#img-mag-window .imv-sep{width:1px;height:20px;background:var(--imv-line2);margin:0 4px;flex:0 0 auto;}',
+            '#img-mag-window .imv-head{display:flex;align-items:center;gap:2px;height:38px;flex:0 0 38px;',
+            'padding:0 6px 0 12px;background:var(--imv-bar);border-bottom:1px solid var(--imv-line);',
+            'cursor:move;user-select:none;box-sizing:border-box;min-width:0;}',
+            '#img-mag-window .imv-title{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
+            'opacity:.9;min-width:0;font-size:12.5px;}',
+            '#img-mag-window .imv-zoom{display:flex;align-items:center;gap:1px;flex:0 0 auto;}',
+            '#img-mag-window .imv-zoomval{min-width:44px;padding:3px 6px;border-radius:5px;background:rgba(255,255,255,.07);',
+            'color:#fff;border:none;cursor:pointer;font-size:11.5px;font-variant-numeric:tabular-nums;outline:none;}',
+            '#img-mag-window .imv-zoomval:hover{background:rgba(255,255,255,.14);}',
+            '#img-mag-window .imv-body{display:flex;flex:1 1 auto;min-height:0;min-width:0;position:relative;}',
+            '#img-mag-window .imv-rail{flex:0 0 62px;width:62px;display:flex;flex-direction:column;align-items:stretch;',
+            'gap:1px;padding:5px 0 6px;background:var(--imv-rail);border-right:1px solid var(--imv-line);',
+            'overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;box-sizing:border-box;}',
+            '#img-mag-window .imv-rail[hidden]{display:none;}',
+            '#img-mag-window .imv-rail::-webkit-scrollbar{width:4px;}',
+            '#img-mag-window .imv-rail::-webkit-scrollbar-thumb{background:var(--imv-line2);border-radius:2px;}',
+            '#img-mag-window .imv-cat{display:flex;flex-direction:column;}',
+            '#img-mag-window .imv-cat+.imv-cat{border-top:1px solid var(--imv-line);margin-top:3px;padding-top:3px;}',
+            '#img-mag-window .imv-cat.is-dragging{opacity:.55;}',
+            '#img-mag-window .imv-cathead{position:relative;display:flex;align-items:center;gap:1px;min-height:16px;',
+            'padding:2px 2px 1px;border-radius:5px;cursor:grab;color:var(--imv-fg3);font-size:7px;',
+            'font-weight:600;line-height:1.15;letter-spacing:-.1px;user-select:none;}',
+            '#img-mag-window .imv-cathead:hover{background:rgba(255,255,255,.07);color:var(--imv-fg2);}',
+            '#img-mag-window .imv-cathead:focus-visible{outline:2px solid var(--imv-accent);outline-offset:-1px;}',
+            '#img-mag-window .imv-catname{flex:1 1 auto;min-width:0;overflow-wrap:break-word;}',
+            '#img-mag-window .imv-catchev{width:8px;height:8px;opacity:.5;flex:0 0 auto;transition:transform .15s;}',
+            '#img-mag-window .imv-cat.is-collapsed .imv-catchev{transform:rotate(-90deg);}',
+            '#img-mag-window .imv-catbody{display:flex;flex-direction:column;align-items:center;gap:1px;}',
+            '#img-mag-window .imv-cat.is-collapsed .imv-catbody{display:none;}',
+            '#img-mag-window .imv-railbtn{width:56px;height:27px;border-radius:7px;}',
+            '#img-mag-window .imv-railbtn svg{width:17px;height:17px;}',
+            '#img-mag-window .imv-center{display:flex;flex-direction:column;flex:1 1 auto;min-width:0;min-height:0;}',
+            '#img-mag-window .imv-status{flex:0 0 28px;height:28px;display:flex;align-items:center;gap:7px;',
+            'padding:0 10px;background:var(--imv-bar);border-top:1px solid var(--imv-line);font-size:11.5px;',
+            'color:var(--imv-fg2);box-sizing:border-box;min-width:0;}',
+            '#img-mag-window .imv-status[hidden]{display:none;}',
+            '#img-mag-window .imv-stool{color:var(--imv-fg);font-weight:600;flex:0 0 auto;}',
+            '#img-mag-window .imv-sdot{width:4px;height:4px;border-radius:50%;background:var(--imv-accent);flex:0 0 auto;}',
+            '#img-mag-window .imv-shint{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+            '#img-mag-window .imv-sright{display:flex;gap:10px;flex:0 0 auto;font-variant-numeric:tabular-nums;}',
+            '#img-mag-window .imv-props{flex:0 0 186px;width:186px;display:flex;flex-direction:column;',
+            'background:var(--imv-props);border-left:1px solid var(--imv-line);box-sizing:border-box;min-width:0;}',
+            '#img-mag-window .imv-props[hidden]{display:none;}',
+            '#img-mag-window .imv-propshead{display:flex;align-items:center;gap:6px;padding:7px 8px 6px;',
+            'border-bottom:1px solid var(--imv-line);color:var(--imv-fg2);font-size:11px;',
+            'text-transform:uppercase;letter-spacing:.04em;flex:0 0 auto;}',
+            '#img-mag-window .imv-propshead svg{width:14px;height:14px;flex:0 0 auto;}',
+            '#img-mag-window .imv-propstitle{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+            '#img-mag-window .imv-propshead kbd{font:10px ui-monospace,monospace;padding:1px 4px;border-radius:3px;',
+            'background:rgba(255,255,255,.09);color:var(--imv-fg2);flex:0 0 auto;}',
+            '#img-mag-window .imv-propsbody{flex:1 1 auto;overflow-y:auto;padding:8px;display:flex;',
+            'flex-direction:column;gap:9px;min-height:0;scrollbar-width:thin;}',
+            '#img-mag-window .imv-propsbody::-webkit-scrollbar{width:4px;}',
+            '#img-mag-window .imv-propsbody::-webkit-scrollbar-thumb{background:var(--imv-line2);border-radius:2px;}',
+            '#img-mag-window .imv-propsfoot{flex:0 0 auto;padding:5px;border-top:1px solid var(--imv-line);}',
+            '#img-mag-window .imv-fold{display:flex;align-items:center;justify-content:center;gap:5px;width:100%;',
+            'height:24px;background:transparent;color:var(--imv-fg2);border:1px solid var(--imv-line2);',
+            'border-radius:5px;cursor:pointer;font-size:11px;outline:none;}',
+            '#img-mag-window .imv-fold:hover{background:rgba(255,255,255,.08);color:#fff;}',
+            '#img-mag-window .imv-fold svg{width:11px;height:11px;transition:transform .15s;}',
+            '#img-mag-window .imv-props.is-folded{flex:0 0 30px;width:30px;}',
+            '#img-mag-window .imv-props.is-folded .imv-propstitle,',
+            '#img-mag-window .imv-props.is-folded .imv-propshead kbd,',
+            '#img-mag-window .imv-props.is-folded .imv-propsbody,',
+            '#img-mag-window .imv-props.is-folded .imv-fold span{display:none;}',
+            '#img-mag-window .imv-props.is-folded .imv-propshead{justify-content:center;padding:7px 0 6px;}',
+            '#img-mag-window .imv-props.is-folded .imv-fold svg{transform:rotate(180deg);}',
+            '#img-mag-window .imv-plabel{font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;',
+            'color:var(--imv-fg3);display:flex;justify-content:space-between;gap:6px;}',
+            '#img-mag-window .imv-plabel b{color:var(--imv-fg2);font:10.5px ui-monospace,monospace;font-weight:600;}',
+            '#img-mag-window .imv-hsv{display:flex;justify-content:center;}',
+            '#img-mag-window .imv-hsvcv{border-radius:50%;cursor:crosshair;touch-action:none;outline:none;',
+            'box-shadow:0 0 0 1px rgba(0,0,0,.5),0 0 0 2px rgba(255,255,255,.12);display:block;}',
+            '#img-mag-window .imv-hsvwrap{position:relative;width:132px;height:132px;flex:0 0 auto;}',
+            '#img-mag-window .imv-hsvdot{position:absolute;width:14px;height:14px;margin:-7px 0 0 -7px;',
+            'border-radius:50%;border:2px solid #fff;pointer-events:none;',
+            'box-shadow:0 0 0 1px rgba(0,0,0,.6),0 2px 6px rgba(0,0,0,.5);}',
+            '#img-mag-window .imv-vrow{display:flex;align-items:center;gap:6px;}',
+            '#img-mag-window .imv-vrow span{font:10px ui-monospace,monospace;color:var(--imv-fg3);flex:0 0 auto;}',
+            '#img-mag-window .imv-vrow output{font:10px ui-monospace,monospace;color:var(--imv-fg2);',
+            'min-width:24px;text-align:right;flex:0 0 auto;}',
+            '#img-mag-window .imv-range{flex:1 1 auto;min-width:0;accent-color:var(--imv-accent);height:14px;}',
+            '#img-mag-window .imv-thicks{display:flex;gap:3px;flex-wrap:wrap;}',
+            '#img-mag-window .imv-thick{flex:1 1 0;min-width:0;height:22px;border-radius:5px;cursor:pointer;',
+            'background:rgba(255,255,255,.06);color:var(--imv-fg2);border:1px solid transparent;',
+            'font-size:10.5px;outline:none;}',
+            '#img-mag-window .imv-thick:hover{background:rgba(255,255,255,.12);color:#fff;}',
+            '#img-mag-window .imv-thick.is-on{background:rgba(46,196,182,.2);border-color:rgba(46,196,182,.55);color:#8ef0e4;}',
+            '#img-mag-window .imv-rows{display:flex;gap:3px;}',
+            '#img-mag-window .imv-row{flex:1 1 0;height:24px;border-radius:5px;cursor:pointer;',
+            'background:rgba(255,255,255,.06);color:var(--imv-fg2);border:1px solid transparent;',
+            'font-size:11px;outline:none;}',
+            '#img-mag-window .imv-row:hover{background:rgba(255,255,255,.12);color:#fff;}',
+            '#img-mag-window .imv-row.is-on{background:rgba(46,196,182,.2);border-color:rgba(46,196,182,.55);color:#8ef0e4;}',
+            '#img-mag-window .imv-hint{font-size:10.5px;line-height:1.45;color:var(--imv-fg3);}',
+            '#img-mag-window .imv-swrow{display:flex;align-items:center;gap:8px;width:100%;padding:5px 7px;',
+            'border-radius:5px;background:transparent;border:none;cursor:pointer;color:#eee;',
+            'text-align:left;outline:none;}',
+            '#img-mag-window .imv-swrow:hover{background:rgba(255,255,255,.08);}',
+            '#img-mag-window .imv-swrow:focus-visible{outline:2px solid #4da3ff;outline-offset:-2px;}',
+            '#img-mag-window .imv-swlabel{flex:1 1 auto;min-width:0;font-size:12px;}',
+            '#img-mag-window .imv-swlabel em{display:block;font-size:10.5px;font-style:normal;color:var(--imv-fg3);}',
+            '#img-mag-window .imv-switch{flex:0 0 auto;width:26px;height:15px;border-radius:8px;',
+            'background:rgba(255,255,255,.16);position:relative;transition:background .15s;}',
+            '#img-mag-window .imv-switch::after{content:"";position:absolute;left:2px;top:2px;width:11px;height:11px;',
+            'border-radius:50%;background:#fff;transition:left .15s;}',
+            '#img-mag-window .imv-swrow[aria-checked="true"] .imv-switch{background:var(--imv-accent);}',
+            '#img-mag-window .imv-swrow[aria-checked="true"] .imv-switch::after{left:13px;}',
+            '#img-mag-window .imv-sec{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;',
+            'color:var(--imv-fg3);padding:7px 7px 4px;position:sticky;top:0;background:#2b2b2b;z-index:1;}',
+            '#img-mag-window .imv-presets{display:grid;grid-template-columns:1fr 1fr;gap:5px;padding:2px 7px 8px;}',
+            '#img-mag-window .imv-preset{height:28px;border-radius:6px;cursor:pointer;font-size:11.5px;',
+            'background:rgba(255,255,255,.07);color:#ddd;border:1px solid transparent;outline:none;}',
+            '#img-mag-window .imv-preset:hover{background:rgba(255,255,255,.14);color:#fff;}',
+            '#img-mag-window .imv-preset.is-on{background:rgba(46,196,182,.2);border-color:rgba(46,196,182,.55);color:#8ef0e4;}',
+            '#img-mag-window .imv-count{font:10.5px ui-monospace,monospace;color:var(--imv-fg3);}',
+            '@media (prefers-reduced-motion: reduce){#img-mag-window *{transition-duration:.001s!important;animation-duration:.001s!important;}}',
+        ].join('');
+        const st = document.createElement('style');
+        st.id = 'img-mag-css';
+        st.textContent = css;
+        (document.head || document.documentElement).appendChild(st);
+    }
+
+    // --- Кнопка-иконка в стиле рейки --------------------------------------
+    function railIconButton(iconName, label, hint) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'imv-btn imv-railbtn';
+        b.title = label + (hint ? ' — ' + hint : '');
+        b.setAttribute('aria-label', label);
+        b.appendChild(makeIcon(ICONS[iconName] || ICONS.more));
+        // iconButton() ставит размеры инлайново — в рейке нужен свой,
+        // поэтому инлайновые значения снимаем, оставляя их классу.
+        b.style.width = '';
+        b.style.height = '';
+        b.addEventListener('mousedown', (e) => e.stopPropagation());
+        return b;
+    }
+
+    // --- Шапка окна --------------------------------------------------------
+    function buildHead(caption, url) {
+        const head = document.createElement('div');
+        head.className = 'imv-head';
+
+        const title = document.createElement('div');
+        title.className = 'imv-title';
+        title.textContent = caption || 'Изображение';
+        title.title = caption || url || '';
+
+        zoomLabel = document.createElement('button');
+        zoomLabel.type = 'button';
+        zoomLabel.className = 'imv-zoomval';
+        zoomLabel.title = 'Сбросить масштаб до 100% (Ctrl+0)';
+        zoomLabel.setAttribute('aria-label', 'Масштаб. Нажмите, чтобы сбросить до 100%');
+        zoomLabel.addEventListener('mousedown', (e) => e.stopPropagation());
+        zoomLabel.addEventListener('click', (e) => { e.stopPropagation(); setZoom(1); });
+
+        const zoom = document.createElement('div');
+        zoom.className = 'imv-zoom';
+        const headBtn = (icon, label, onClick) => bareButton(iconButton(icon, label, onClick), 'imv-btn');
+
+        const btnOut = headBtn('zoomOut', 'Отдалить', () => zoomCenter(1 / ZOOM_STEP));
+        const btnIn = headBtn('zoomIn', 'Приблизить', () => zoomCenter(ZOOM_STEP));
+        const btnFit = headBtn('fit', 'По размеру окна (Ctrl+1)', () => fitImage());
+        zoom.append(btnOut, zoomLabel, btnIn, btnFit);
+
+        pinBtn = headBtn('pin', 'Закрепить окно (Shift+P)', () => togglePin());
+        const helpBtn = headBtn('help', 'Горячие клавиши (?)', () => toggleHelp());
+        const setBtn = headBtn('sliders', 'Настройки интерфейса', (e) => openUiSettings(e.currentTarget));
+        setBtn.setAttribute('aria-haspopup', 'true');
+        moreBtn = headBtn('more', 'Ещё', (e) => openMoreMenu(e.currentTarget));
+        const closeBtn = headBtn('close', 'Закрыть (Esc)', () => closeWindow());
+
+        const sepA = document.createElement('div');
+        sepA.className = 'imv-sep';
+
+        head.append(title, zoom, sepA, pinBtn, helpBtn, setBtn, moreBtn, closeBtn);
+        applyWindowLook();
+        return head;
+    }
+
+    // --- Рейка с категориями ----------------------------------------------
+    const railActs = {};
+    let railDragEl = null, railDragY = 0, railDragMoved = false;
+
+    function buildRail() {
+        const rail = railEl || document.createElement('div');
+        rail.className = 'imv-rail';
+        rail.setAttribute('role', 'toolbar');
+        rail.setAttribute('aria-orientation', 'vertical');
+        rail.setAttribute('aria-label', 'Инструменты');
+        while (rail.firstChild) rail.removeChild(rail.firstChild);
+
+        toolButtons = {};
+        for (const k in railActs) delete railActs[k];
+        let shown = 0;
+
+        const cfg = loadUiCfg();
+        cfg.order.forEach((catId) => {
+            if (!cfg.cats[catId]) return;
+            const items = [];
+            if (catId === 'draw') {
+                ['move', 'pen', 'line', 'arrow', 'rect', 'circle', 'text', 'eraser'].forEach((id) => {
+                    if (cfg.tools[id]) items.push({ kind: 'tool', id: id });
+                });
+            }
+            RAIL_ACTS.forEach((a) => {
+                if (a.cat === catId && cfg.acts[a.id]) items.push({ kind: 'act', def: a });
+            });
+            if (!items.length) return;
+            shown++;
+
+            const wrap = document.createElement('div');
+            wrap.className = 'imv-cat';
+            wrap.setAttribute('data-cat', catId);
+
+            const head = document.createElement('div');
+            head.className = 'imv-cathead';
+            head.setAttribute('role', 'button');
+            head.tabIndex = 0;
+            head.title = catLabel(catId) + ' — перетащите, чтобы поменять порядок';
+            const nm = document.createElement('span');
+            nm.className = 'imv-catname';
+            nm.textContent = catLabel(catId);
+            const chev = makeIcon(ICONS.chevron || ICONS.close);
+            chev.setAttribute('class', 'imv-catchev');
+            head.append(nm, chev);
+            wrap.appendChild(head);
+
+            const body = document.createElement('div');
+            body.className = 'imv-catbody';
+
+            items.forEach((it) => {
+                let b;
+                if (it.kind === 'tool') {
+                    const def = toolDefById(it.id);
+                    b = railIconButton(it.id, def.label, 'клавиша ' + def.key);
+                    b.setAttribute('data-tool', it.id);
+                    b.setAttribute('aria-pressed', String(currentTool === it.id));
+                    if (currentTool === it.id) b.classList.add('is-on');
+                    b.addEventListener('click', () => setTool(it.id));
+                    toolButtons[it.id] = b;
+                    setBtnActive(b, currentTool === it.id);
+                } else {
+                    b = railIconButton(it.def.icon, it.def.label, it.def.hint);
+                    b.setAttribute('data-act', it.def.id);
+                    b.addEventListener('click', () => runRailAction(it.def.id, b));
+                    railActs[it.def.id] = b;
+                }
+                body.appendChild(b);
+            });
+            wrap.appendChild(body);
+
+            if (cfg.collapsed[catId]) wrap.classList.add('is-collapsed');
+
+            head.addEventListener('click', () => {
+                if (railDragMoved) return;
+                cfg.collapsed[catId] = !cfg.collapsed[catId];
+                wrap.classList.toggle('is-collapsed', cfg.collapsed[catId]);
+                saveUiCfg();
+            });
+            head.addEventListener('keydown', (ev) => {
+                if (ev.key === 'Enter' || ev.key === ' ') {
+                    ev.preventDefault();
+                    cfg.collapsed[catId] = !cfg.collapsed[catId];
+                    wrap.classList.toggle('is-collapsed', cfg.collapsed[catId]);
+                    saveUiCfg();
+                } else if (ev.altKey && (ev.key === 'ArrowUp' || ev.key === 'ArrowDown')) {
+                    ev.preventDefault();
+                    const i = cfg.order.indexOf(catId);
+                    const j = i + (ev.key === 'ArrowUp' ? -1 : 1);
+                    if (i >= 0 && j >= 0 && j < cfg.order.length) {
+                        const t = cfg.order[i]; cfg.order[i] = cfg.order[j]; cfg.order[j] = t;
+                        saveUiCfg();
+                        buildRail();
+                        const h = rail.querySelector('[data-cat="' + catId + '"] .imv-cathead');
+                        if (h) h.focus();
+                    }
+                }
+            });
+            head.addEventListener('pointerdown', (ev) => {
+                if (ev.button !== 0) return;
+                railDragEl = wrap;
+                railDragY = ev.clientY;
+                railDragMoved = false;
+            });
+
+            rail.appendChild(wrap);
+        });
+
+        rail.hidden = !cfg.groups.rail || shown === 0;
+        undoBtn = railActs['undo'] || null;
+        redoBtn = railActs['redo'] || null;
+        syncHistoryButtons();
+        syncGridButton();
+        return rail;
+    }
+
+    function onRailDragMove(ev) {
+        if (!railDragEl || !railEl) return;
+        if (!railDragMoved && Math.abs(ev.clientY - railDragY) < 5) return;
+        railDragMoved = true;
+        railDragEl.classList.add('is-dragging');
+        const sibs = railEl.querySelectorAll('.imv-cat');
+        for (let i = 0; i < sibs.length; i++) {
+            if (sibs[i] === railDragEl) continue;
+            const r = sibs[i].getBoundingClientRect();
+            if (ev.clientY < r.top + r.height / 2) {
+                if (sibs[i].previousSibling !== railDragEl) railEl.insertBefore(railDragEl, sibs[i]);
+                return;
+            }
+        }
+        if (railEl.lastChild !== railDragEl) railEl.appendChild(railDragEl);
+    }
+
+    function onRailDragUp() {
+        if (!railDragEl) return;
+        railDragEl.classList.remove('is-dragging');
+        if (railDragMoved && railEl) {
+            const cfg = loadUiCfg();
+            const order = [];
+            const cats = railEl.querySelectorAll('.imv-cat');
+            for (let i = 0; i < cats.length; i++) order.push(cats[i].getAttribute('data-cat'));
+            RAIL_CATS.forEach((c) => { if (order.indexOf(c.id) === -1) order.push(c.id); });
+            cfg.order = order;
+            saveUiCfg();
+            toast('Порядок категорий сохранён');
+        }
+        railDragEl = null;
+        setTimeout(() => { railDragMoved = false; }, 0);
+    }
+
+    function toolDefById(id) {
+        const map = {
+            move: { label: 'Перемещение', key: 'V', hint: 'Тяните картинку или колесо для зума' },
+            pen: { label: 'Карандаш', key: '1', hint: 'Тяните по картинке, чтобы рисовать' },
+            line: { label: 'Линия', key: '2', hint: 'Потяните от начала до конца' },
+            arrow: { label: 'Стрелка', key: '3', hint: 'Потяните от хвоста к острию' },
+            rect: { label: 'Прямоугольник', key: '4', hint: 'Потяните по диагонали рамки' },
+            circle: { label: 'Эллипс', key: '5', hint: 'Потяните по диагонали овала' },
+            text: { label: 'Текст', key: '6', hint: 'Кликните по картинке и печатайте' },
+            eraser: { label: 'Ластик', key: '7', hint: 'Проведите по фигуре, чтобы стереть' },
+        };
+        return map[id] || { label: id, key: '', hint: '' };
+    }
+
+    function runRailAction(id, btn) {
+        if (id === 'undo') { undo(); return; }
+        if (id === 'redo') { redo(); return; }
+        if (id === 'clear') { clearAll(); return; }
+        if (id === 'grid') { togglePixelGrid(); return; }
+        if (id === 'copy') { copyToClipboard(); return; }
+        if (id === 'save') { savePNG(); return; }
+        if (id === 'export') { openExportMenu(btn); return; }
+        if (id === 'palette') { openPalettePanel(btn); return; }
+        if (id === 'analysis') { openAnalysisMenu(btn); return; }
+        if (id === 'persp') {
+            if (perspCanvas) restorePerspective(); else beginPerspective();
+            return;
+        }
+        if (id === 'ocr') { startScanFor('text'); return; }
+        if (id === 'qr') {
+            if (!barcodeSupported()) { toast('Этот браузер не умеет читать коды'); return; }
+            startScanFor('qr');
+            return;
+        }
+    }
+
+    function syncGridButton() {
+        for (const k in railActs) {
+            if (k !== 'grid') continue;
+            const b = railActs[k];
+            const on = !!pixelGrid;
+            b.classList.toggle('is-on', on);
+            b.setAttribute('aria-pressed', String(on));
+        }
+    }
+
+    function syncHistoryButtons() {
+        const canUndo = histIndex > 0;
+        const canRedo = histIndex < history.length - 1;
+        setEnabled(undoBtn, canUndo);
+        setEnabled(redoBtn, canRedo);
+        if (railActs['clear']) setEnabled(railActs['clear'], annotations.length > 0);
+    }
+
+    // --- Палитра: HSV-круг ------------------------------------------------
+    function hsvToRgb(h, s, v) {
+        const hh = ((h % 360) + 360) % 360 / 60;
+        const c = v * s;
+        const x = c * (1 - Math.abs(hh % 2 - 1));
+        const m = v - c;
+        let r = 0, g = 0, b = 0;
+        if (hh < 1) { r = c; g = x; }
+        else if (hh < 2) { r = x; g = c; }
+        else if (hh < 3) { g = c; b = x; }
+        else if (hh < 4) { g = x; b = c; }
+        else if (hh < 5) { r = x; b = c; }
+        else { r = c; b = x; }
+        return { r: Math.round((r + m) * 255), g: Math.round((g + m) * 255), b: Math.round((b + m) * 255) };
+    }
+
+    let uiHsv = { h: 0, s: 1, v: 1 };
+    let wheelPaintedV = -1;   // какая яркость сейчас нарисована на колесе
+
+    function colorToHsv(hex) {
+        const c = hexToRgb(hex) || { r: 255, g: 59, b: 48 };
+        const r = c.r / 255, g = c.g / 255, b = c.b / 255;
+        const max = Math.max(r, g, b), min = Math.min(r, g, b);
+        const d = max - min;
+        let h = 0;
+        if (d > 0) {
+            if (max === r) h = ((g - b) / d) % 6;
+            else if (max === g) h = (b - r) / d + 2;
+            else h = (r - g) / d + 4;
+            h *= 60;
+        }
+        if (h < 0) h += 360;
+        return { h: h, s: max === 0 ? 0 : d / max, v: max };
+    }
+
+    function paintHsvWheel(cv, v) {
+        const size = cv.width;
+        const ctx = cv.getContext('2d');
+        if (!ctx) return;
+        const img = ctx.createImageData(size, size);
+        const data = img.data;
+        const rad = size / 2;
+        for (let y = 0; y < size; y++) {
+            const dy = y - rad + 0.5;
+            for (let x = 0; x < size; x++) {
+                const dx = x - rad + 0.5;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const i = (y * size + x) * 4;
+                if (dist > rad) { data[i + 3] = 0; continue; }
+                const h = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+                const s = Math.min(1, dist / rad);
+                const c = hsvToRgb(h, s, v);
+                data[i] = c.r; data[i + 1] = c.g; data[i + 2] = c.b;
+                data[i + 3] = dist > rad - 1 ? Math.round(255 * (rad - dist)) : 255;
+            }
+        }
+        ctx.clearRect(0, 0, size, size);
+        ctx.putImageData(img, 0, 0);
+    }
+
+    function syncColorUi() {
+        const hsv = colorToHsv(penColor);
+        uiHsv.h = Math.round(hsv.h);
+        uiHsv.s = hsv.s;
+        uiHsv.v = hsv.v;
+        if (!hsvRefs) return;
+        // Перерисовка 132x132 = 17 400 пикселей. При перетаскивании маркера
+        // яркость не меняется, поэтому холст трогаем только когда она ушла.
+        if (wheelPaintedV !== uiHsv.v) {
+            paintHsvWheel(hsvRefs.cv, uiHsv.v);
+            wheelPaintedV = uiHsv.v;
+        }
+        if (hsvRefs.dot) {
+            const ang = uiHsv.h * Math.PI / 180;
+            const rr = uiHsv.s * 50;
+            hsvRefs.dot.style.left = (50 + Math.cos(ang) * rr) + '%';
+            hsvRefs.dot.style.top = (50 + Math.sin(ang) * rr) + '%';
+            hsvRefs.dot.style.background = penColor;
+        }
+        if (hsvRefs.vr) hsvRefs.vr.value = String(Math.round(uiHsv.v * 100));
+        if (hsvRefs.vval) hsvRefs.vval.textContent = String(Math.round(uiHsv.v * 100));
+        if (hsvRefs.swatch) hsvRefs.swatch.style.background = penColor;
+        if (hsvRefs.hex) hsvRefs.hex.textContent = penColor.toUpperCase();
+    }
+
+    let hsvRefs = null;
+
+    function hsvBlock() {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'display:flex;flex-direction:column;gap:5px;';
+
+        const lab = document.createElement('div');
+        lab.className = 'imv-plabel';
+        const nm = document.createElement('span');
+        nm.textContent = 'Цвет';
+        const hex = document.createElement('b');
+        hex.textContent = penColor.toUpperCase();
+        lab.append(nm, hex);
+
+        const outer = document.createElement('div');
+        outer.className = 'imv-hsv';
+        const box = document.createElement('div');
+        box.className = 'imv-hsvwrap';
+        const cv = document.createElement('canvas');
+        cv.className = 'imv-hsvcv';
+        cv.width = 132;
+        cv.height = 132;
+        cv.style.width = '132px';
+        cv.style.height = '132px';
+        cv.tabIndex = 0;
+        cv.setAttribute('role', 'slider');
+        cv.setAttribute('aria-label', 'Цвет: тон и насыщенность');
+        const dot = document.createElement('div');
+        dot.className = 'imv-hsvdot';
+        box.append(cv, dot);
+        outer.appendChild(box);
+
+        const vrow = document.createElement('div');
+        vrow.className = 'imv-vrow';
+        const vnm = document.createElement('span');
+        vnm.textContent = 'V';
+        const vr = document.createElement('input');
+        vr.type = 'range';
+        vr.min = '0';
+        vr.max = '100';
+        vr.step = '1';
+        vr.className = 'imv-range';
+        vr.setAttribute('aria-label', 'Яркость цвета');
+        const vval = document.createElement('output');
+        vval.textContent = String(Math.round(uiHsv.v * 100));
+        vrow.append(vnm, vr, vval);
+
+        hsvRefs = { cv: cv, dot: dot, vr: vr, vval: vval, hex: hex, swatch: null };
+
+        const pickFrom = (ev) => {
+            const r = cv.getBoundingClientRect();
+            const rad = r.width / 2;
+            const dx = ev.clientX - r.left - rad;
+            const dy = ev.clientY - r.top - rad;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const s = Math.max(0, Math.min(1, dist / rad));
+            let h = Math.atan2(dy, dx) * 180 / Math.PI;
+            if (h < 0) h += 360;
+            uiHsv.h = h;
+            uiHsv.s = s;
+            const c = hsvToRgb(h, s, uiHsv.v);
+            setPenColor(rgbToHex(c.r, c.g, c.b), true);
+            syncColorUi();
+        };
+
+        let dragging = false;
+        cv.addEventListener('pointerdown', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            dragging = true;
+            try { cv.setPointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+            pickFrom(ev);
+        });
+        cv.addEventListener('pointermove', (ev) => {
+            if (!dragging) return;
+            ev.preventDefault();
+            pickFrom(ev);
+        });
+        const stopDrag = () => { dragging = false; };
+        cv.addEventListener('pointerup', stopDrag);
+        cv.addEventListener('pointercancel', stopDrag);
+        cv.addEventListener('mousedown', (e) => e.stopPropagation());
+
+        vr.addEventListener('input', () => {
+            uiHsv.v = clamp(parseInt(vr.value, 10) / 100, 0, 1);
+            const c = hsvToRgb(uiHsv.h, uiHsv.s, uiHsv.v);
+            setPenColor(rgbToHex(c.r, c.g, c.b), true);
+            syncColorUi();
+        });
+        vr.addEventListener('mousedown', (e) => e.stopPropagation());
+
+        wrap.append(lab, outer, vrow);
+        return wrap;
+    }
+
+    function thicknessBlock() {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
+        const lab = document.createElement('div');
+        lab.className = 'imv-plabel';
+        const nm = document.createElement('span');
+        nm.textContent = 'Толщина';
+        const val = document.createElement('b');
+        val.textContent = penWidth + 'px';
+        lab.append(nm, val);
+
+        const row = document.createElement('div');
+        row.className = 'imv-thicks';
+        [2, 4, 6, 10, 16].forEach((w) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'imv-thick' + (w === penWidth ? ' is-on' : '');
+            b.textContent = String(w);
+            b.title = 'Толщина ' + w + ' px';
+            b.setAttribute('aria-label', 'Толщина ' + w + ' px');
+            b.addEventListener('mousedown', (e) => e.stopPropagation());
+            b.addEventListener('click', (e) => {
+                e.stopPropagation();
+                penWidth = w;
+                storeSet('img_mag_width', penWidth);
+                const all = row.querySelectorAll('.imv-thick');
+                for (let i = 0; i < all.length; i++) all[i].classList.toggle('is-on', all[i] === b);
+                val.textContent = w + 'px';
+            });
+            row.appendChild(b);
+        });
+
+        wrap.append(lab, row);
+        return wrap;
+    }
+
+    function fillBlock() {
+        const row = document.createElement('div');
+        row.className = 'imv-rows';
+        const mk2 = (on, text, tip) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'imv-row' + (on ? ' is-on' : '');
+            b.textContent = text;
+            b.title = tip;
+            b.setAttribute('aria-label', tip);
+            b.setAttribute('aria-pressed', String(on));
+            b.addEventListener('mousedown', (e) => e.stopPropagation());
+            return b;
+        };
+        const onB = mk2(fillShapes, 'С заливкой', 'Фигуры с заливкой');
+        const offB = mk2(!fillShapes, 'Контур', 'Фигуры контуром');
+        const apply = (on) => {
+            fillShapes = on;
+            storeSet('img_mag_fill', on ? '1' : '0');
+            onB.classList.toggle('is-on', on);
+            offB.classList.toggle('is-on', !on);
+            onB.setAttribute('aria-pressed', String(on));
+            offB.setAttribute('aria-pressed', String(!on));
+        };
+        onB.addEventListener('click', (e) => { e.stopPropagation(); apply(true); });
+        offB.addEventListener('click', (e) => { e.stopPropagation(); apply(false); });
+        row.append(onB, offB);
+        return row;
+    }
+
+    function textSizeBlock() {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
+        const lab = document.createElement('div');
+        lab.className = 'imv-plabel';
+        const nm = document.createElement('span');
+        nm.textContent = 'Размер текста';
+        const val = document.createElement('b');
+        val.textContent = Math.round(textScreenSize()) + 'px';
+        lab.append(nm, val);
+        const rng = document.createElement('input');
+        rng.type = 'range';
+        rng.min = '10';
+        rng.max = '120';
+        rng.step = '1';
+        rng.value = String(Math.round(clamp(textScreenSize(), 10, 120)));
+        rng.className = 'imv-range';
+        rng.setAttribute('aria-label', 'Размер текста');
+        rng.addEventListener('mousedown', (e) => e.stopPropagation());
+        rng.addEventListener('input', () => {
+            const px = clamp(parseInt(rng.value, 10) || 20, 10, 120);
+            storeSet('img_mag_font', px);
+            val.textContent = px + 'px';
+        });
+        wrap.append(lab, rng);
+        return wrap;
+    }
+
+    function radiusBlock() {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
+        const lab = document.createElement('div');
+        lab.className = 'imv-plabel';
+        const nm = document.createElement('span');
+        nm.textContent = 'Радиус ластика';
+        const val = document.createElement('b');
+        val.textContent = Math.round(eraserRadius()) + 'px';
+        lab.append(nm, val);
+        const rng = document.createElement('input');
+        rng.type = 'range';
+        rng.min = '6';
+        rng.max = '80';
+        rng.step = '1';
+        rng.value = String(Math.round(clamp(eraserRadius(), 6, 80)));
+        rng.className = 'imv-range';
+        rng.setAttribute('aria-label', 'Радиус ластика');
+        rng.addEventListener('mousedown', (e) => e.stopPropagation());
+        rng.addEventListener('input', () => {
+            const px = clamp(parseInt(rng.value, 10) || 12, 6, 80);
+            penWidth = clamp(px / 2.2, 1, 40);
+            storeSet('img_mag_width', penWidth);
+            val.textContent = px + 'px';
+        });
+        wrap.append(lab, rng);
+        return wrap;
+    }
+
+    // --- Панель свойств ----------------------------------------------------
+    let propsIcon = null, propsTitle = null, propsKey = null, propsBody = null;
+
+    function buildProps() {
+        const props = document.createElement('div');
+        props.className = 'imv-props';
+
+        const head = document.createElement('div');
+        head.className = 'imv-propshead';
+        propsIcon = makeIcon(ICONS.move);
+        propsTitle = document.createElement('span');
+        propsTitle.className = 'imv-propstitle';
+        propsTitle.textContent = 'Перемещение';
+        propsKey = document.createElement('kbd');
+        propsKey.textContent = 'V';
+        head.append(propsIcon, propsTitle, propsKey);
+
+        propsBody = document.createElement('div');
+        propsBody.className = 'imv-propsbody';
+
+        const foot = document.createElement('div');
+        foot.className = 'imv-propsfoot';
+        const fold = document.createElement('button');
+        fold.type = 'button';
+        fold.className = 'imv-fold';
+        fold.title = 'Свернуть или развернуть панель свойств';
+        fold.setAttribute('aria-label', 'Свернуть панель свойств');
+        const chev = makeIcon(ICONS.chevron || ICONS.close);
+        const foldTxt = document.createElement('span');
+        foldTxt.textContent = 'Свернуть';
+        fold.append(chev, foldTxt);
+        fold.addEventListener('mousedown', (e) => e.stopPropagation());
+        fold.addEventListener('click', (e) => {
+            e.stopPropagation();
+            propsFolded = !propsFolded;
+            applyUiCfg();
+            if (!propsFolded && viewEl) { viewRect = null; fitCanvas(); invalidate(); }
+        });
+        foot.appendChild(fold);
+
+        props.append(head, propsBody, foot);
+        return props;
+    }
+
+    function renderPropsPanel() {
+        if (!propsBody || !propsTitle || !propsIcon) return;
+        hsvRefs = null;
+        while (propsBody.firstChild) propsBody.removeChild(propsBody.firstChild);
+
+        const def = toolDefById(currentTool);
+        propsTitle.textContent = def.label;
+        propsKey.textContent = def.key;
+        const nextIcon = makeIcon(ICONS[currentTool] || ICONS.move);
+        if (propsIcon.parentNode) propsIcon.parentNode.replaceChild(nextIcon, propsIcon);
+        propsIcon = nextIcon;
+
+        if (currentTool === 'move') {
+            const h = document.createElement('div');
+            h.className = 'imv-hint';
+            h.textContent = 'Тяните картинку, чтобы сдвинуть кадр. Колесо мыши приближает к курсору.';
+            propsBody.appendChild(h);
+        } else if (currentTool === 'eraser') {
+            propsBody.appendChild(radiusBlock());
+            const h = document.createElement('div');
+            h.className = 'imv-hint';
+            h.textContent = 'Ластик удаляет пометки, а не пиксели снимка. Отменяется через Ctrl+Z.';
+            propsBody.appendChild(h);
+        } else {
+            propsBody.appendChild(hsvBlock());
+            propsBody.appendChild(thicknessBlock());
+            if (currentTool === 'text') propsBody.appendChild(textSizeBlock());
+            if (currentTool === 'rect' || currentTool === 'circle') propsBody.appendChild(fillBlock());
+            const h = document.createElement('div');
+            h.className = 'imv-hint';
+            h.textContent = def.hint;
+            propsBody.appendChild(h);
+        }
+        syncColorUi();
+    }
+
+    // --- Строка состояния -------------------------------------------------
+    let sbTool = null, sbHint = null, sbCount = null, sbZoom = null;
+
+    function buildStatusBar() {
+        const bar = document.createElement('div');
+        bar.className = 'imv-status';
+        sbTool = document.createElement('span');
+        sbTool.className = 'imv-stool';
+        sbTool.textContent = 'Перемещение';
+        const dot = document.createElement('span');
+        dot.className = 'imv-sdot';
+        sbHint = document.createElement('span');
+        sbHint.className = 'imv-shint';
+        sbHint.textContent = 'Тяните картинку или колесо для зума';
+        const right = document.createElement('span');
+        right.className = 'imv-sright';
+        sbCount = document.createElement('span');
+        sbCount.textContent = 'пометок нет';
+        sbZoom = document.createElement('span');
+        sbZoom.textContent = '100%';
+        right.append(sbCount, sbZoom);
+        bar.append(sbTool, dot, sbHint, right);
+        return bar;
+    }
+
+    function pluralMarks(n) {
+        const a = Math.abs(n) % 100, b = a % 10;
+        if (a > 10 && a < 20) return n + ' пометок';
+        if (b === 1) return n + ' пометка';
+        if (b >= 2 && b <= 4) return n + ' пометки';
+        return n + ' пометок';
+    }
+
+    function syncStatus() {
+        const def = toolDefById(currentTool);
+        if (sbTool) sbTool.textContent = def.label;
+        if (sbHint) sbHint.textContent = def.hint;
+        if (sbCount) sbCount.textContent = annotations.length ? pluralMarks(annotations.length) : 'пометок нет';
+        if (sbZoom) sbZoom.textContent = Math.round(scale * 100) + '%';
+    }
+
+    // --- Применение настроек видимости ------------------------------------
+    function applyUiCfg() {
+        const cfg = loadUiCfg();
+        if (railEl) {
+            railEl.hidden = !cfg.groups.rail;
+            buildRail();
+        }
+        if (propsEl) {
+            propsEl.hidden = !cfg.groups.props;
+            propsEl.classList.toggle('is-folded', !!propsFolded);
+            const fold = propsEl.querySelector('.imv-fold');
+            if (fold) {
+                const sp = fold.querySelector('span');
+                if (sp) sp.textContent = propsFolded ? 'Развернуть' : 'Свернуть';
+                fold.setAttribute('aria-label', propsFolded ? 'Развернуть панель свойств' : 'Свернуть панель свойств');
+            }
+        }
+        if (statusBarEl) statusBarEl.hidden = !cfg.groups.statusbar;
+        if (viewW) { viewRect = null; fitCanvas(); invalidate(); }
+        if (settingsEl) refreshUiSettings();
+    }
+
+    // --- Настройки интерфейса ---------------------------------------------
+    let settingsEl = null, settingsRefs = null;
+
+    function uiSwitchRow(label, hint, on, onChange) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'imv-swrow';
+        b.setAttribute('role', 'switch');
+        b.setAttribute('aria-checked', on ? 'true' : 'false');
+        const lab = document.createElement('span');
+        lab.className = 'imv-swlabel';
+        lab.textContent = label;
+        if (hint) {
+            const em = document.createElement('em');
+            em.textContent = hint;
+            lab.appendChild(em);
+        }
+        const sw = document.createElement('span');
+        sw.className = 'imv-switch';
+        b.append(lab, sw);
+        b.addEventListener('mousedown', (e) => e.stopPropagation());
+        b.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const next = b.getAttribute('aria-checked') !== 'true';
+            b.setAttribute('aria-checked', next ? 'true' : 'false');
+            onChange(next);
+        });
+        return b;
+    }
+
+    function openUiSettings(anchorBtn) {
+        closeMenu();
+        const cfg = loadUiCfg();
+        const panel = document.createElement('div');
+        Object.assign(panel.style, {
+            position: 'absolute', zIndex: '9', width: '322px',
+            maxWidth: 'calc(100% - 12px)', maxHeight: 'min(560px, calc(100% - 12px))',
+            overflow: 'auto', background: '#2b2b2b', color: '#eee', borderRadius: '8px',
+            boxShadow: '0 10px 28px rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.12)',
+            padding: '4px 0 8px', boxSizing: 'border-box', font: '12.5px/1.4 sans-serif',
+        });
+        panel.setAttribute('role', 'dialog');
+        panel.setAttribute('aria-label', 'Настройки интерфейса');
+        panel.addEventListener('mousedown', (e) => e.stopPropagation());
+        panel.addEventListener('click', (e) => e.stopPropagation());
+
+        settingsEl = panel;
+        settingsRefs = { presetBtns: [], rows: [] };
+
+        const section = (title) => {
+            const s = document.createElement('div');
+            s.className = 'imv-sec';
+            s.textContent = title;
+            panel.appendChild(s);
+        };
+
+        section('Наборы');
+        const presets = document.createElement('div');
+        presets.className = 'imv-presets';
+        UI_PRESETS.forEach((p) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'imv-preset' + (cfg.preset === p.id ? ' is-on' : '');
+            b.textContent = p.label;
+            b.addEventListener('mousedown', (e) => e.stopPropagation());
+            b.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const c = loadUiCfg();
+                const d = defaultUi();
+                if (p.id === 'full') {
+                    c.cats = d.cats; c.tools = d.tools; c.acts = d.acts; c.groups = d.groups;
+                } else if (p.id === 'view') {
+                    for (const k in c.cats) c.cats[k] = false;
+                    for (const k in c.tools) c.tools[k] = false;
+                    for (const k in c.acts) c.acts[k] = false;
+                    c.groups.rail = false; c.groups.props = false;
+                } else if (p.id === 'draw') {
+                    c.cats.recognize = false; c.cats.file = false;
+                    c.groups.attrs = true;
+                }
+                c.preset = p.id;
+                saveUiCfg();
+                applyUiCfg();
+            });
+            settingsRefs.presetBtns.push({ id: p.id, btn: b });
+            presets.appendChild(b);
+        });
+        panel.appendChild(presets);
+
+        const resetWrap = document.createElement('div');
+        resetWrap.style.cssText = 'padding:0 7px 6px;';
+        const reset = document.createElement('button');
+        reset.type = 'button';
+        reset.className = 'imv-preset';
+        reset.style.width = '100%';
+        reset.textContent = 'Сбросить к полному набору';
+        reset.addEventListener('mousedown', (e) => e.stopPropagation());
+        reset.addEventListener('click', (e) => {
+            e.stopPropagation();
+            uiCfg = defaultUi();
+            saveUiCfg();
+            applyUiCfg();
+            toast('Интерфейс сброшен');
+        });
+        resetWrap.appendChild(reset);
+        panel.appendChild(resetWrap);
+
+        const addToggle = (label, hint, on, kind, id) => {
+            const row = uiSwitchRow(label, hint, on, (next) => {
+                const c = loadUiCfg();
+                if (kind === 'cat') c.cats[id] = next;
+                else if (kind === 'tool') c.tools[id] = next;
+                else if (kind === 'act') c.acts[id] = next;
+                else c.groups[id] = next;
+                c.preset = 'custom';
+                saveUiCfg();
+                applyUiCfg();
+            });
+            panel.appendChild(row);
+            settingsRefs.rows.push({ kind: kind, id: id, btn: row });
+        };
+
+        section('Категории рейки');
+        RAIL_CATS.forEach((c) => addToggle(c.label, c.hint, cfg.cats[c.id], 'cat', c.id));
+
+        section('Инструменты рисования');
+        ['move', 'pen', 'line', 'arrow', 'rect', 'circle', 'text', 'eraser'].forEach((id) => {
+            const def = toolDefById(id);
+            addToggle(def.label, def.hint, cfg.tools[id], 'tool', id);
+        });
+
+        section('Кнопки действий');
+        RAIL_ACTS.forEach((a) => {
+            addToggle(a.label, catLabel(a.cat) + ' · ' + a.hint, cfg.acts[a.id], 'act', a.id);
+        });
+
+        section('Блоки интерфейса');
+        UI_GROUPS.forEach((g) => addToggle(g.label, g.hint, cfg.groups[g.id], 'group', g.id));
+
+        const note = document.createElement('div');
+        note.className = 'imv-hint';
+        note.style.padding = '8px 9px 2px';
+        note.textContent = 'Категории в рейке можно перетаскивать за заголовок. Скрытые кнопки не занимают место.';
+        panel.appendChild(note);
+
+        win.appendChild(panel);
+
+        // ставим под кнопкой, не выпуская за окно
+        const l = clamp(anchorBtn ? (anchorBtn.offsetLeft + anchorBtn.offsetWidth - panel.offsetWidth) : 8,
+            6, Math.max(6, win.clientWidth - panel.offsetWidth - 6));
+        const t = (anchorBtn ? anchorBtn.offsetTop + anchorBtn.offsetHeight : 6) + 2;
+        panel.style.left = Math.round(l) + 'px';
+        panel.style.top = Math.round(Math.max(6, t)) + 'px';
+        panel.style.maxHeight = Math.max(120, win.clientHeight - t - 10) + 'px';
+
+        menuEl = panel;
+        menuAnchorBtn = anchorBtn;
+        if (anchorBtn) {
+            anchorBtn.dataset.open = '1';
+            setBtnActive(anchorBtn, true);
+            anchorBtn.setAttribute('aria-expanded', 'true');
+        }
+        settingsEl = panel;
+        return panel;
+    }
+
+    function refreshUiSettings() {
+        if (!settingsEl || !settingsRefs) return;
+        const cfg = loadUiCfg();
+        settingsRefs.rows.forEach((r) => {
+            let on = false;
+            if (r.kind === 'cat') on = !!cfg.cats[r.id];
+            else if (r.kind === 'tool') on = !!cfg.tools[r.id];
+            else if (r.kind === 'act') on = !!cfg.acts[r.id];
+            else on = !!cfg.groups[r.id];
+            r.btn.setAttribute('aria-checked', on ? 'true' : 'false');
+        });
+        settingsRefs.presetBtns.forEach((p) => p.btn.classList.toggle('is-on', cfg.preset === p.id));
+    }
+
+
     function openWindow(url, caption) {
         if (win) closeWindow();
+        injectWinCss();
 
         imageUrl = url;
         canExport = null;
@@ -1200,6 +2318,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         win.setAttribute('role', 'dialog');
         win.setAttribute('aria-label', caption || 'Image Magnifier');
         win.tabIndex = -1;
+        win.className = 'imv-win';
         Object.assign(win.style, {
             position: 'fixed', zIndex: '2147483647',
             left: left + 'px', top: top + 'px',
@@ -1214,205 +2333,16 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
             outline: 'none', boxSizing: 'border-box',
         });
 
-        // --- заголовок ---
-        barEl = document.createElement('div');
-        Object.assign(barEl.style, {
-            display: 'flex', alignItems: 'center', gap: '2px',
-            height: '34px', flex: '0 0 34px', padding: '0 4px 0 10px',
-            background: '#2b2b2b', color: '#fff', cursor: 'move',
-            userSelect: 'none', boxSizing: 'border-box', minWidth: '0',
-        });
+        // --- шапка ---
+        barEl = buildHead(caption, url);
 
-        const title = document.createElement('div');
-        title.textContent = caption || 'Изображение';
-        title.title = caption || url;
-        Object.assign(title.style, {
-            flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap', opacity: '0.9', minWidth: '0',
-        });
-
-        zoomLabel = document.createElement('button');
-        zoomLabel.type = 'button';
-        zoomLabel.title = 'Сбросить масштаб до 100% (Ctrl+0)';
-        zoomLabel.setAttribute('aria-label', 'Масштаб. Нажмите, чтобы сбросить до 100%');
-        Object.assign(zoomLabel.style, {
-            opacity: '0.85', margin: '0 2px', minWidth: '42px', textAlign: 'right',
-            background: 'rgba(255,255,255,0.06)', color: '#fff', border: 'none', padding: '3px 5px',
-            borderRadius: '4px', cursor: 'pointer', font: 'inherit', fontSize: '11.5px',
-            fontVariantNumeric: 'tabular-nums', outline: 'none',
-            flex: '0 0 auto', boxSizing: 'border-box',
-        });
-        zoomLabel.addEventListener('mousedown', (e) => e.stopPropagation());
-        zoomLabel.addEventListener('click', (e) => { e.stopPropagation(); setZoom(1); });
-        decorateButton(zoomLabel);
-
-        const btnOut = iconButton('zoomOut', 'Отдалить', () => zoomCenter(1 / ZOOM_STEP));
-        const btnIn = iconButton('zoomIn', 'Приблизить', () => zoomCenter(ZOOM_STEP));
-        const btnFit = iconButton('fit', 'По размеру окна (Ctrl+1)', () => fitImage());
-        const btnCopy = iconButton('copy', 'Копировать изображение (Ctrl+C)', () => copyToClipboard());
-        const btnSave = iconButton('save', 'Сохранить (Ctrl+S)', () => savePNG());
-        const btnPin = iconButton('pin', 'Закрепить окно (P)', () => togglePin());
-        const btnHelp = iconButton('help', 'Горячие клавиши (?)', () => toggleHelp());
-        const btnClose = iconButton('close', 'Закрыть (Esc)', () => closeWindow());
-
-        // в узком окне управление сжимается, но не исчезает
-        [btnOut, btnIn, btnFit, btnCopy, btnSave, btnPin, btnHelp, btnClose].forEach(compactButton);
-        pinBtn = btnPin;
-        setBtnActive(btnPin, pinned);
-
-        barEl.append(title, zoomLabel, btnOut, btnIn, btnFit, separator(), btnCopy, btnSave, btnPin, btnHelp, btnClose);
-        applyWindowLook();
-
-        // --- панель инструментов ---
-        // Обёртка в две полосы: инструменты/цвета и действия. Так панель не
-        // превращается в стену из 20+ иконок и не прыгает при переносе.
-        const tbWrap = document.createElement('div');
-        Object.assign(tbWrap.style, {
-            flex: '0 0 auto', background: '#242424',
-            borderTop: '1px solid rgba(255,255,255,0.08)', userSelect: 'none',
-            boxSizing: 'border-box',
-        });
-
-        const tb = document.createElement('div');
-        Object.assign(tb.style, {
-            display: 'flex', alignItems: 'center', gap: '3px', flexWrap: 'wrap',
-            flex: '0 0 auto', padding: '4px 8px 2px', background: 'transparent',
-            userSelect: 'none', boxSizing: 'border-box',
-        });
-
-        toolButtons = {};
-        const toolBtn = (name, icon, tip) => {
-            const b = iconButton(icon, tip, () => setTool(name));
-            toolButtons[name] = b;
-            return b;
-        };
-
-        const colorInput = document.createElement('input');
-        colorInput.type = 'color';
-        colorInput.value = penColor;
-        colorInput.title = 'Цвет';
-        colorInputEl = colorInput;
-        colorInput.setAttribute('aria-label', 'Цвет рисования');
-        Object.assign(colorInput.style, {
-            width: '28px', height: '24px', border: 'none', background: 'transparent',
-            cursor: 'pointer', padding: '0', flex: '0 0 auto', outline: 'none',
-            borderRadius: '4px',
-        });
-        colorInput.addEventListener('input', () => {
-            penColor = colorInput.value;
-            storeSet('img_mag_color', penColor);
-        });
-        colorInput.addEventListener('change', () => {
-            pushRecentColor(colorInput.value);
-            if (quickPaletteEl) refreshQuickPalette();
-        });
-        colorInput.addEventListener('mouseenter', () => {
-            colorInput.style.boxShadow = '0 0 0 2px rgba(255,255,255,0.35)';
-        });
-        colorInput.addEventListener('mouseleave', () => { colorInput.style.boxShadow = 'none'; });
-        colorInput.addEventListener('focus', () => {
-            colorInput.style.boxShadow = '0 0 0 2px #4da3ff';
-        });
-        colorInput.addEventListener('blur', () => { colorInput.style.boxShadow = 'none'; });
-        colorInput.addEventListener('mousedown', (e) => e.stopPropagation());
-
-        const widthSel = document.createElement('select');
-        widthSel.title = 'Толщина линии';
-        widthSel.setAttribute('aria-label', 'Толщина линии');
-        Object.assign(widthSel.style, {
-            background: '#1e1e1e', color: '#fff', border: '1px solid rgba(255,255,255,0.2)',
-            borderRadius: '4px', cursor: 'pointer', height: '24px', flex: '0 0 auto',
-        });
-        [2, 4, 6, 10, 16].forEach((w) => {
-            const o = document.createElement('option');
-            o.value = String(w);
-            o.textContent = w + 'px';
-            if (w === penWidth) o.selected = true;
-            widthSel.appendChild(o);
-        });
-        widthSel.addEventListener('change', () => {
-            penWidth = clamp(parseInt(widthSel.value, 10) || 4, 1, 40);
-            storeSet('img_mag_width', penWidth);
-        });
-        widthSel.addEventListener('mousedown', (e) => e.stopPropagation());
-
-        fillBtn = iconButton(fillShapes ? 'fillOn' : 'fillOff', 'Заливка фигур', () => {
-            fillShapes = !fillShapes;
-            storeSet('img_mag_fill', fillShapes ? '1' : '0');
-            fillBtn.replaceChildren(makeIcon(ICONS[fillShapes ? 'fillOn' : 'fillOff']));
-            setBtnActive(fillBtn, fillShapes);
-            fillBtn.title = fillShapes ? 'Заливка включена' : 'Заливка выключена';
-            fillBtn.setAttribute('aria-label', 'Заливка фигур');
-        });
-        setBtnActive(fillBtn, fillShapes);
-
-        undoBtn = iconButton('undo', 'Отменить (Ctrl+Z)', () => undo());
-        redoBtn = iconButton('redo', 'Повторить (Ctrl+Shift+Z)', () => redo());
-        const clearBtn = iconButton('trash', 'Очистить всё', () => clearAll());
-
-        // Группы новых возможностей — меню, а не стена иконок.
-        analysisBtn = iconButton('scan', 'Анализ изображения', (e) => openAnalysisMenu(e.currentTarget));
-        analysisBtn.setAttribute('aria-haspopup', 'true');
-        analysisBtn.setAttribute('aria-expanded', 'false');
-        exportBtn = iconButton('export', 'Экспорт и буфер', (e) => openExportMenu(e.currentTarget));
-        exportBtn.setAttribute('aria-haspopup', 'true');
-        exportBtn.setAttribute('aria-expanded', 'false');
-        moreBtn = iconButton('more', 'Ещё: закрепление, сетка, вид', (e) => openMoreMenu(e.currentTarget));
-        moreBtn.setAttribute('aria-haspopup', 'true');
-        moreBtn.setAttribute('aria-expanded', 'false');
-
-        tb.append(
-            toolBtn('move', 'move', 'Перемещение / панорама (V)'),
-            toolBtn('pen', 'pen', 'Карандаш (1)'),
-            toolBtn('line', 'line', 'Линия (2)'),
-            toolBtn('arrow', 'arrow', 'Стрелка (3)'),
-            toolBtn('rect', 'rect', 'Прямоугольник (4)'),
-            toolBtn('circle', 'circle', 'Эллипс (5)'),
-            toolBtn('text', 'text', 'Текст (6)'),
-            toolBtn('eraser', 'eraser', 'Ластик (7)'),
-            separator(), colorInput, widthSel, fillBtn,
-            quickPaletteEl = buildQuickPalette(),
-            tbSpacer(),
-            undoBtn, redoBtn, clearBtn
-        );
-
-        // вторая полоса: действия над картинкой и меню-группы
-        const tb2 = document.createElement('div');
-        Object.assign(tb2.style, {
-            display: 'flex', alignItems: 'center', gap: '3px', flexWrap: 'wrap',
-            flex: '0 0 auto', padding: '0 8px 4px', background: 'transparent',
-            userSelect: 'none', boxSizing: 'border-box',
-        });
-        const rowLabel = document.createElement('span');
-        rowLabel.textContent = 'Анализ и экспорт';
-        Object.assign(rowLabel.style, {
-            fontSize: '11px', opacity: '0.45', marginRight: '4px',
-            flex: '0 1 auto', overflow: 'hidden', textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap', minWidth: '0',
-        });
-        tb2.append(rowLabel, analysisBtn, exportBtn, moreBtn);
-
-        tbWrap.append(tb, tb2);
-
-        // кнопки-меню не участвуют в подсветке «активный инструмент»
-        setBtnActive(analysisBtn, false);
-        setBtnActive(exportBtn, false);
-        setBtnActive(moreBtn, false);
-
-        tb.addEventListener('mousedown', (e) => {
-            // клик по пустому месту панели не должен таскать окно
-            if (e.target === tb || e.target === tb2) e.stopPropagation();
-        });
-        tb2.addEventListener('mousedown', (e) => {
-            if (e.target === tb2) e.stopPropagation();
-        });
 
         // --- вьюпорт ---
         viewEl = document.createElement('div');
         Object.assign(viewEl.style, {
             flex: '1 1 auto', overflow: 'hidden', position: 'relative',
             background: '#0f0f0f', cursor: 'grab', touchAction: 'none',
-            minHeight: '0', boxSizing: 'border-box',
+            minHeight: '0', minWidth: '0', boxSizing: 'border-box',
         });
 
         imgEl = document.createElement('img');
@@ -1441,8 +2371,19 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         });
         statusEl.textContent = 'Загрузка…';
 
+        const center = document.createElement('div');
+        center.className = 'imv-center';
         viewEl.append(imgEl, drawEl, statusEl, buildHelp());
-        win.append(barEl, tbWrap, viewEl);
+        statusBarEl = buildStatusBar();
+        center.append(viewEl, statusBarEl);
+
+        railEl = buildRail();
+        propsEl = buildProps();
+
+        const bodyEl = document.createElement('div');
+        bodyEl.className = 'imv-body';
+        bodyEl.append(railEl, center, propsEl);
+        win.append(barEl, bodyEl);
 
         // --- события ---
         viewEl.addEventListener('wheel', onWheel, { passive: false });
@@ -1454,6 +2395,8 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         viewEl.addEventListener('touchend', onTouchEnd, { passive: false });
         viewEl.addEventListener('touchcancel', onTouchEnd, { passive: false });
         barEl.addEventListener('mousedown', onDragStart);
+        document.addEventListener('pointermove', onRailDragMove);
+        document.addEventListener('pointerup', onRailDragUp);
         win.addEventListener('mouseenter', () => { overWin = true; });
         win.addEventListener('mouseleave', () => { overWin = false; });
         win.addEventListener('mouseover', () => { overWin = true; });
@@ -1485,6 +2428,9 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
 
         setTool(storeGet('img_mag_tool') || 'move', true);
         updateHistoryButtons();
+        applyUiCfg();
+        renderPropsPanel();
+        syncStatus();
         fitCanvas();
         updateZoomLabel();
 
@@ -2315,8 +3261,8 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
     }
 
     function updateZoomLabel() {
-        if (!zoomLabel) return;
-        zoomLabel.textContent = Math.round(scale * 100) + '%';
+        if (zoomLabel) zoomLabel.textContent = Math.round(scale * 100) + '%';
+        if (sbZoom) sbZoom.textContent = Math.round(scale * 100) + '%';
     }
 
     function apply() {
@@ -2324,6 +3270,12 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         baseValid = false;
         requestDraw();
         schedulePersist();
+    }
+
+    // Единая точка обновления статуса после смены инструмента/пометок.
+    function afterToolChange() {
+        renderPropsPanel();
+        syncStatus();
     }
 
     function zoomAt(cx, cy, factor) {
@@ -2493,13 +3445,13 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         // предупреждаем и подсказываем, что вся кисть отменяется одним Ctrl+Z
         if (name === 'eraser' && !silent) announce('Ластик: проведите по фигуре, чтобы стереть');
         if (!silent) storeSet('img_mag_tool', name);
+        syncStatus();
+        if (!silent) renderPropsPanel();
     }
 
     function updateHistoryButtons() {
-        const canUndo = histIndex > 0;
-        const canRedo = histIndex < history.length - 1;
-        setEnabled(undoBtn, canUndo);
-        setEnabled(redoBtn, canRedo);
+        syncHistoryButtons();
+        if (sbCount) sbCount.textContent = annotations.length ? pluralMarks(annotations.length) : 'пометок нет';
     }
 
     function setEnabled(b, on) {
@@ -3779,7 +4731,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         const raw = String(code.rawValue || '');
         const fmt = String(code.format || '');
         closeMenu();
-        const panel = openPanel(analysisBtn, 'Распознанный код', (p) => {
+        const panel = openPanel(null, 'Распознанный код', (p) => {
             const val = mk('div', {
                 padding: '2px 6px 6px', wordBreak: 'break-all',
                 font: '12px ui-monospace, monospace', color: '#cfe9ff',
@@ -3883,7 +4835,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
     function showTextResult(text, rect, detected, note) {
         if (!win) return;
         closeMenu();
-        openPanel(analysisBtn, detected ? 'Распознанный текст' : 'Текст: увеличенная копия', (p) => {
+        openPanel(null, detected ? 'Распознанный текст' : 'Текст: увеличенная копия', (p) => {
             if (text) {
                 const box = document.createElement('textarea');
                 box.value = text;
@@ -4058,7 +5010,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
             menuItem(p, {
                 label: 'Палитра изображения', icon: 'palette',
                 check: imagePalette.length > 0,
-                onClick: () => openPalettePanel(analysisBtn),
+                onClick: () => openPalettePanel(null),
             });
             menuSep(p);
             menuItem(p, {
@@ -4139,6 +5091,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         baseRev++;
         clearBaseCache();
         invalidate();
+        syncGridButton();
         announce(pixelGrid
             ? 'Сетка пикселей включена (видна от ' + Math.round(PIXEL_GRID_FROM * 100) + '%)'
             : 'Сетка пикселей выключена');
@@ -4694,11 +5647,12 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
     }
 
     function focusColorInput() {
-        if (!colorInputEl) return;
-        try {
-            colorInputEl.focus({ preventScroll: true });
-            colorInputEl.click();
-        } catch (e) { /* системный пикер может быть недоступен */ }
+        const cv = propsBody && propsBody.querySelector('.imv-hsvcv');
+        if (cv) {
+            try { cv.focus({ preventScroll: true }); } catch (e) { /* ignore */ }
+            announce('Круговой выбор цвета. Текущий: ' + penColor.toUpperCase());
+            return;
+        }
         announce('Цвет: ' + penColor.toUpperCase());
     }
 
@@ -4786,6 +5740,8 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         document.removeEventListener('keydown', onKey, true);
         document.removeEventListener('keyup', onKeyUp, true);
         document.removeEventListener('mousedown', onOutsideClick, true);
+        document.removeEventListener('pointermove', onRailDragMove);
+        document.removeEventListener('pointerup', onRailDragUp);
         window.removeEventListener('resize', onViewportChange);
         window.removeEventListener('scroll', onPageScroll, true);
 
@@ -4816,12 +5772,23 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         redoBtn = null;
         fillBtn = null;
         pinBtn = null;
-        analysisBtn = null;
-        exportBtn = null;
         moreBtn = null;
-        quickPaletteEl = null;
-        colorInputEl = null;
         toolButtons = {};
+        railEl = null;
+        propsEl = null;
+        statusBarEl = null;
+        propsIcon = null;
+        propsTitle = null;
+        propsKey = null;
+        propsBody = null;
+        sbTool = null;
+        sbHint = null;
+        sbCount = null;
+        sbZoom = null;
+        settingsEl = null;
+        settingsRefs = null;
+        hsvRefs = null;
+        for (const k in railActs) delete railActs[k];
 
         mode = null;
         drawing = false;

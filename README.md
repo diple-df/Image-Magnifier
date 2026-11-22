@@ -5,9 +5,7 @@
 > rectangle, ellipse and text — extract the image palette, straighten a photographed document,
 > read text and QR codes, and export PNG / JPEG / WebP.
 >
-> **Author:** diple_df x claude · **Version:** 3.10.0
-
-<img width="1920" height="1002" alt="image" src="https://github.com/user-attachments/assets/b0d8290d-10ed-4e5c-9b46-43765eacfb5a" />
+> **Author:** diple_df x claude · **Version:** 3.11.0
 
 ### Demo
 
@@ -99,11 +97,31 @@ Large images are drawn from a prebuilt mipmap pyramid (1/2, 1/4, 1/8), so pannin
 | **↓** | Save the annotated image (`Ctrl+S`) in the format chosen under **Export** |
 | **📌** | Pin the window — an outside click no longer closes it (`Shift+P`) |
 | **?** | Shortcut help overlay |
+| **⚙** | Interface settings — hide whole groups or individual buttons |
+| **⋯** | More: pin, translucency, look-only, pixel grid, reset view |
 | **×** | Close the window |
+
+### Layout
+
+The window has three zones:
+
+- **Tool rail (left)** — annotation tools and action buttons, grouped into
+  collapsible categories: *Drawing*, *Recognition*, *Analysis*, *File*,
+  *History*. Drag a category header to reorder it, click a header to collapse
+  it, or press `Alt+↑` / `Alt+↓` on a focused header.
+- **Canvas (centre)** — the image plus a status bar underneath showing the
+  active tool, its gesture hint, the annotation count and the current zoom.
+- **Properties panel (right)** — settings for the active tool. The button at
+  its bottom folds the panel down to a 30 px strip, which gives the canvas
+  more room; press it again to bring the panel back.
+
+Everything above is optional: **⚙ → Blocks** hides the rail, the properties
+panel or the status bar entirely, and **⚙ → Presets** switches between
+*Everything visible*, *View only* and *Drawing only* in one click.
 
 ### Drawing Tools
 
-A toolbar below the title bar provides annotation tools:
+The rail under the *Drawing* category provides annotation tools:
 
 | Tool | Key | Description |
 |---|---|---|
@@ -125,9 +143,13 @@ Modifiers while drawing:
 
 Shape tools can be filled with the fill toggle in the toolbar.
 
-### Quick colours
+### Colour picker
 
-Five pinned swatches sit right in the toolbar, followed by your most recently used colours. One click each — no system colour picker. The pinned row and the recent list are remembered between sessions.
+The properties panel holds a round HSV wheel: hue runs around the rim,
+saturation grows outwards from the white centre, and a **V** slider below sets
+brightness. Click or drag anywhere on the wheel to pick a colour; the marker
+follows the pointer and the HEX value is shown above it. There is no system
+colour dialog anywhere in the window.
 
 ### Palette from the image
 
@@ -260,12 +282,12 @@ The script also checks for updates on its own: once a day, in the background aft
 loads (skipped while the magnifier window is open), never more than one request per day.
 **Tampermonkey menu → Image Magnifier: Проверить обновления** runs a check on demand. When a
 newer version exists, a dismissible banner links to the raw file and appears once per version.
-Version segments are compared numerically, so `3.10.0` is correctly newer than `3.9.0`.
+Version segments are compared numerically, so `3.11.0` is correctly newer than `3.9.0`.
 
 ### Script Version
 
 | File | Script Name | Version | Status |
 |---|---|---|---|
-| `imgMagnifier.user.js` | Image Magnifier | 3.10.0 | Current — installable |
+| `imgMagnifier.user.js` | Image Magnifier | 3.11.0 | Current — installable |
 
 ---
