@@ -5,7 +5,7 @@
 > rectangle, ellipse and text — extract the image palette, straighten a photographed document,
 > read text and QR codes, and export PNG / JPEG / WebP.
 >
-> **Author:** diple_df x claude · **Version:** 3.11.1
+> **Author:** diple_df x claude · **Version:** 3.12.0
 
 ### Demo
 
@@ -107,13 +107,15 @@ The window has three zones:
 
 - **Tool rail (left)** — annotation tools and action buttons, grouped into
   collapsible categories: *Drawing*, *Recognition*, *Analysis*, *File*,
-  *History*. Drag a category header to reorder it, click a header to collapse
+  *History*. *Analysis* holds the image palette and the pixel grid. Drag a category header to reorder it, click a header to collapse
   it, or press `Alt+↑` / `Alt+↓` on a focused header.
 - **Canvas (centre)** — the image plus a status bar underneath showing the
   active tool, its gesture hint, the annotation count and the current zoom.
-- **Properties panel (right)** — settings for the active tool. The button at
-  its bottom folds the panel down to a 30 px strip, which gives the canvas
-  more room; press it again to bring the panel back.
+- **Properties panel (right)** — settings for the active tool. It starts
+  folded into a 30 px strip so the picture, not the interface, is what you see
+  first. Move the pointer to the right edge of the window and the panel slides
+  open; move away and it folds again. Press the pin button at its bottom to
+  keep it open for good — the choice is remembered.
 
 Everything above is optional: **⚙ → Blocks** hides the rail, the properties
 panel or the status bar entirely, and **⚙ → Presets** switches between
@@ -153,7 +155,7 @@ colour dialog anywhere in the window.
 
 ### Palette from the image
 
-**Analysis → Палитра изображения** samples a 64×64 downscale, quantises it into coarse 4-bit-per-channel bins and shows the 5–8 dominant colours as swatches. Clicking a swatch copies its HEX **and** sets the brush colour, so you can annotate in the picture's own palette. For cross-origin images the canvas is protected, so the script fetches the bytes through `GM_xmlhttpRequest` (which is not subject to page CORS) and builds the palette from that copy.
+**Analysis → Палитра изображения** samples a 64×64 downscale, quantises it into coarse 4-bit-per-channel bins and shows the 5–8 dominant colours as swatches. Clicking a swatch copies its HEX **and** sets the brush colour, so you can annotate in the picture's own palette. For cross-origin images the canvas is protected, so the script asks the server for a CORS-enabled copy (`fetch` with `mode: 'cors'`) and builds the palette from that copy. Hosts that send no CORS headers give no pixel access; the menu says so instead of failing silently.
 
 ### Perspective correction
 
@@ -161,10 +163,12 @@ colour dialog anywhere in the window.
 
 ### Reading text and codes
 
-Select a rectangle and the script works locally:
+Drag a rectangle and the script recognises what is inside.
 
-- **Прочитать текст** — uses `window.TextDetector` where the browser has it. The honest fallback is always offered: the selection is upscaled 4× and put on the clipboard, ready to paste into any OCR service. No network, no WASM models.
-- **QR-код / штрих-код** — uses `window.BarcodeDetector` when available. A QR result offers *copy value* and *open link*, with the domain shown before you confirm. If the API is missing, the entry is not shown at all instead of being a dead button.
+- **Прочитать текст** — real OCR through [tesseract.js](https://tesseract.projectnaptha.com/), English and Russian. Nothing is downloaded until you actually use it: the first run fetches the engine and the language models (about 10 seconds), every later run finishes in under a second and reuses the warm worker for a minute. The result opens in a panel with the engine confidence, a *copy text* button and a *select another area* button. The selection is upscaled just enough to give the engine ~40 px of character height.
+- **QR-код / штрих-код** — decoded in the script itself by an embedded [jsQR](https://github.com/cozmo/jsQR) build, so it works in every browser with no platform API. The result shows the payload, the format, and *copy value* / *open link* with the domain shown first. Linear formats still go through `BarcodeDetector` when the platform has it.
+
+Both work on cross-origin pictures too, because the rectangle is cut from the same CORS-enabled copy the palette uses.
 
 ### Export presets
 
@@ -305,12 +309,12 @@ The script also checks for updates on its own: once a day, in the background aft
 loads (skipped while the magnifier window is open), never more than one request per day.
 **Tampermonkey menu → Image Magnifier: Проверить обновления** runs a check on demand. When a
 newer version exists, a dismissible banner links to the raw file and appears once per version.
-Version segments are compared numerically, so `3.11.1` is correctly newer than `3.9.0`.
+Version segments are compared numerically, so `3.12.0` is correctly newer than `3.9.0`.
 
 ### Script Version
 
 | File | Script Name | Version | Status |
 |---|---|---|---|
-| `imgMagnifier.user.js` | Image Magnifier | 3.11.1 | Current — installable |
+| `imgMagnifier.user.js` | Image Magnifier | 3.12.0 | Current — installable |
 
 ---
