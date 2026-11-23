@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Image Magnifier
 // @namespace    https://github.com/diple-df/Image-Magnifier
-// @version      3.14.0
+// @version      3.14.1
 // @description  Двойной Ctrl по изображению открывает его в плавающем окне: зум 5–2000% с привязкой к курсору, панорамирование, инструменты рисования (карандаш, линия, стрелка, прямоугольник, эллипс, текст, ластик), круговой HSV-выбор цвета, сетка пикселей, закрепление окна и панели, отмена и повтор, полностью клавиатурный режим
 // @author       diple_df x claude
 // @match        *://*/*
@@ -102,7 +102,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         const STAMP_KEY = 'img_mag_upd_ts';
         const SEEN_KEY = 'img_mag_upd_seen';
         const DAY = 86400000;
-        const LOCAL_VERSION = '3.14.0';
+        const LOCAL_VERSION = '3.14.1';
 
         function curVer() {
             try {
@@ -113,7 +113,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
             return LOCAL_VERSION;
         }
 
-        // Сравнение по числовым сегментам: 3.14.0 больше 3.9.0 (строкой — нет).
+        // Сравнение по числовым сегментам: 3.14.1 больше 3.9.0 (строкой — нет).
         function cmp(a, b) {
             const pa = String(a || '').split(/[.\-+]/);
             const pb = String(b || '').split(/[.\-+]/);
@@ -619,16 +619,11 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
     let propsEl = null;       // правая панель свойств
     let statusBarEl = null;   // строка состояния под картинкой
     let propsFolded = true;   // панель свойств свёрнута: картинка важнее интерфейса
-    let propsPinned = false;
-    // Пользователь свернул панель вручную. Пока курсор не уйдёт из правой
-    // зоны, наведение не должно её снова раскрывать — иначе кажется,
-    // что кнопка «Свернуть» не работает.
-    let propsLock = false;  // закреплена навсегда (не прячется на уходе курсора)
     let propsHover = false;   // курсор сейчас в зоне раскрытия справа
 
     let scale = 1, tx = 0, ty = 0;
     let currentTool = 'move';
-    let penColor = '#ff3b30';
+    let penColor = '#ff3b30';   // по умолчанию красный, хранится в img_mag_color
     let penWidth = 4;
     let fillShapes = false;
 
@@ -1308,7 +1303,6 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
             '#img-mag-window .imv-fold:hover{background:rgba(255,255,255,.08);color:#fff;}',
             '#img-mag-window .imv-fold svg{width:11px;height:11px;transition:transform .15s;}',
             '#img-mag-window .imv-props.is-folded{flex:0 0 26px;width:26px;opacity:.85;}',
-            '#img-mag-window .imv-props.is-folded .imv-propspin{display:none;}',
             '#img-mag-window .imv-props.is-folded .imv-propstitle,',
             '#img-mag-window .imv-props.is-folded .imv-propshead kbd,',
             '#img-mag-window .imv-props.is-folded .imv-propsbody,',
@@ -1932,9 +1926,6 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
     // Зона — правые 28px картинки; уход с неё сворачивает панель обратно,
     // если она не закреплена.
     function onPropsHoverEdge(on) {
-        // Курсор ушёл из правой зоны — ручное сворачивание больше не нужно.
-        if (!on) propsLock = false;
-        if (propsPinned || propsLock) { on = false; }
         // Курсор на самой панели — тоже «в зоне»: иначе она схлопнется
         // в момент, когда пользователь тянется к ползунку.
         if (!on && propsEl && !propsEl.classList.contains('is-folded')) {
@@ -1947,9 +1938,26 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         if (!propsEl) return;
         // Только класс, без applyUiCfg(): тот перестраивает рейку, а это
         // на каждое движение мыши слишком дорого.
-        const eff = propsPinned ? false : (propsFolded && !propsHover);
+        const eff = propsFolded && !propsHover;
         propsEl.classList.toggle('is-folded', !!eff);
-        if (viewEl) { viewRect = null; fitCanvas(); invalidate(); }
+        // Панель меняет ширину вьюпорта с transition 130 мс. Если картинка
+        // была вписана — заново вписываем её в новый размер, но только
+        // ПОСЛЕ завершения анимации: сразу после toggle вьюпорт ещё
+        // промежуточной ширины, и рефит под неё оставляет картинку
+        // обрезанной.
+        if (viewEl) {
+            const iw = imageW(), ih = imageH();
+            const wasFit = iw && viewH && Math.abs(scale - Math.min(viewW / iw, viewH / ih, 4)) < 0.001;
+            viewRect = null;
+            fitCanvas();
+            invalidate();
+            setTimeout(() => {
+                if (!win) return;
+                viewRect = null;
+                fitCanvas();
+                if (wasFit) fitImage(); else invalidate();
+            }, 160);
+        }
     }
 
     function buildProps() {
@@ -1971,38 +1979,6 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
 
         const foot = document.createElement('div');
         foot.className = 'imv-propsfoot';
-
-        // Единственная кнопка панели. Закреплено — панель всегда раскрыта;
-        // откреплено — панель сама выезжает при наведении на правый край
-        // и прячется, когда курсор уходит. Отдельная кнопка «свернуть»
-        // не нужна: то же самое делает открепление.
-        const pin = document.createElement('button');
-        pin.type = 'button';
-        pin.className = 'imv-fold imv-propspin';
-        pin.setAttribute('aria-pressed', String(propsPinned));
-        pin.title = 'Держать панель раскрытой';
-        pin.setAttribute('aria-label', 'Держать панель свойств раскрытой');
-        const pinIcon = makeIcon(ICONS.pin || ICONS.more);
-        const pinTxt = document.createElement('span');
-        pinTxt.textContent = 'Закрепить';
-        pin.append(pinIcon, pinTxt);
-        pin.addEventListener('mousedown', (e) => e.stopPropagation());
-        pin.addEventListener('click', (e) => {
-            e.stopPropagation();
-            propsPinned = !propsPinned;
-            storeSet('img_mag_propspin', propsPinned ? '1' : '0');
-            // При закреплении сразу раскрываем; при откреплении возвращаем
-            // поведение «свёрнута, пока курсор не в правой зоне».
-            propsFolded = !propsPinned;
-            propsLock = false;
-            pin.setAttribute('aria-pressed', String(propsPinned));
-            pin.classList.toggle('is-on', propsPinned);
-            pin.title = propsPinned ? 'Панель закреплена — нажмите, чтобы отпустить' : 'Держать панель раскрытой';
-            if (pinTxt) pinTxt.textContent = propsPinned ? 'Открепить' : 'Закрепить';
-            applyUiCfg();
-            if (viewEl) { viewRect = null; fitCanvas(); invalidate(); }
-        });
-        foot.appendChild(pin);
 
         props.append(head, propsBody, foot);
         return props;
@@ -2102,16 +2078,8 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         }
         if (propsEl) {
             propsEl.hidden = !cfg.groups.props;
-            const eff = propsPinned ? false : (propsFolded && !propsHover);
+            const eff = propsFolded && !propsHover;
             propsEl.classList.toggle('is-folded', !!eff);
-            const pinBtn = propsEl.querySelector('.imv-propspin');
-            if (pinBtn) {
-                pinBtn.setAttribute('aria-pressed', String(propsPinned));
-                pinBtn.classList.toggle('is-on', propsPinned);
-                pinBtn.title = propsPinned ? 'Панель закреплена — нажмите, чтобы отпустить' : 'Держать панель раскрытой';
-                const sp = pinBtn.querySelector('span');
-                if (sp) sp.textContent = propsPinned ? 'Открепить' : 'Закрепить';
-            }
         }
         if (statusBarEl) statusBarEl.hidden = !cfg.groups.statusbar;
         if (viewW) { viewRect = null; fitCanvas(); invalidate(); }
@@ -2334,10 +2302,8 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         penWidth = clamp(storeNum('img_mag_width', 4), 1, 40);
         fillShapes = storeGet('img_mag_fill') === '1';
         pinned = storeGet('img_mag_pin') === '1';
-        propsPinned = storeGet('img_mag_propspin') === '1';
         propsHover = false;
-        propsLock = false;
-        propsFolded = !propsPinned;
+        propsFolded = true;
         ghostMode = false;
         translucent = storeGet('img_mag_translucent') === '1';
         pixelGrid = storeGet('img_mag_grid') === '1';
