@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Image Magnifier
 // @namespace    https://github.com/diple-df/Image-Magnifier
-// @version      3.15.0
+// @version      3.15.1
 // @description  Двойной Ctrl по изображению открывает его в плавающем окне: зум 5–2000% с привязкой к курсору, панорамирование, инструменты рисования (карандаш, линия, стрелка, прямоугольник, эллипс, текст, ластик), круговой HSV-выбор цвета, сетка пикселей, закрепление окна и панели, отмена и повтор, полностью клавиатурный режим
 // @author       diple_df x claude
 // @match        *://*/*
@@ -102,7 +102,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         const STAMP_KEY = 'img_mag_upd_ts';
         const SEEN_KEY = 'img_mag_upd_seen';
         const DAY = 86400000;
-        const LOCAL_VERSION = '3.15.0';
+        const LOCAL_VERSION = '3.15.1';
 
         function curVer() {
             try {
@@ -2421,17 +2421,15 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         viewEl.addEventListener('touchend', onTouchEnd, { passive: false });
         viewEl.addEventListener('touchcancel', onTouchEnd, { passive: false });
         barEl.addEventListener('mousedown', onDragStart);
-        // Правая зона вьюпорта: наведение раскрывает свёрнутую панель свойств.
-        // Зона раскрытия — правые 84px ОКНА (свёрнутая панель + запас),
-        // а не viewEl: у свёрнутой панели viewEl кончается левее, и
-        // курсор до слушателя на нём просто не доходил.
+        // Правая зона: наведение раскрывает свёрнутую панель свойств.
+        // Зона раскрытия — ТОЛЬКО сама свёрнутая панель (полоска у края),
+        // без запаса на вьюпорте. Когда панель раскрыта, зоной остаётся
+        // она сама; уход левее её края схлопывает панель (если не на ней).
         win.addEventListener('mousemove', (e) => {
             const r = win.getBoundingClientRect();
-            // Зона раскрытия — узкая полоса у правого края (24px + сама
-            // свёрнутая панель). Зона закрытия — та же полоса: курсор
-            // ушёл левее края — панель схлопывается (если не на ней).
-            const edge = r.right - 24 - (propsEl && !propsEl.classList.contains('is-folded') ? propsEl.getBoundingClientRect().width : 26);
-            onPropsHoverEdge(e.clientX >= edge);
+            const open = propsEl && !propsEl.classList.contains('is-folded');
+            const w = open ? propsEl.getBoundingClientRect().width : 26;
+            onPropsHoverEdge(e.clientX >= r.right - w);
         });
         win.addEventListener('mouseleave', () => onPropsHoverEdge(false));
         document.addEventListener('pointermove', onRailDragMove);

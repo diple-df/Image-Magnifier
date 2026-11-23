@@ -5,7 +5,7 @@
 > rectangle, ellipse, text and an eraser. Pick colours from a round HSV wheel, flip a pixel grid on
 > for pixel art, and undo or redo anything you draw.
 >
-> **Author:** diple_df x claude · **Version:** 3.15.0
+> **Author:** diple_df x claude · **Version:** 3.15.1
 
 ### Demo
 
@@ -217,9 +217,9 @@ window still shows canvas, tools and colour at once without horizontal scrolling
 ### The properties panel
 
 The right-hand panel starts **collapsed** into a 26 px strip, so the image — not the interface — is
-what you see when the window opens. Move the pointer to the right edge of the window and the panel
-slides out; move away and it folds back. Only the window itself can be pinned (📌 / `Shift+P`) —
-the panel is always hover-driven.
+what you see when the window opens. The strip itself is the reveal zone: hover it and the panel
+slides out; move the pointer left, off the panel, and it folds back. Pin it open with the 📌
+button in the panel footer (or `Shift+P`).
 
 ### Floating window ergonomics
 
@@ -273,12 +273,12 @@ The script also checks for updates on its own: once a day, in the background aft
 loads (skipped while the magnifier window is open), never more than one request per day.
 **Tampermonkey menu → Image Magnifier: Проверить обновления** runs a check on demand. When a
 newer version exists, a dismissible banner links to the raw file and appears once per version.
-Version segments are compared numerically, so `3.15.0` is correctly newer than `3.9.0`.
+Version segments are compared numerically, so `3.15.1` is correctly newer than `3.9.0`.
 
 ### Script Version
 
 | File | Script Name | Version | Status |
 |---|---|---|---|
-| `imgMagnifier.user.js` | Image Magnifier | 3.15.0 | Current — installable |
+| `imgMagnifier.user.js` | Image Magnifier | 3.15.1 | Current — installable |
 
 ---
