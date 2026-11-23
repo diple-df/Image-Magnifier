@@ -5,7 +5,7 @@
 > rectangle, ellipse and text — extract the image palette, straighten a photographed document,
 > read text and QR codes, and export PNG / JPEG / WebP.
 >
-> **Author:** diple_df x claude · **Version:** 3.12.0
+> **Author:** diple_df x claude · **Version:** 3.13.0
 
 ### Demo
 
@@ -236,8 +236,11 @@ reaches. Only the visible region is drawn each frame, so cost follows the window
 ### Opening behaviour
 
 Every image opens **fitted to the window**, so the whole picture is visible immediately — scrollbars
-are acceptable, a cropped first view is not. Previously the zoom level from the last session was
-restored, which could leave a large photo showing only a corner on open; that restore is gone.
+are acceptable, a cropped first view is not. Small pictures are scaled **up** to fill the window too
+(capped at 4x, so a 16 px icon does not turn into a blur), which is why a 320x240 image now fills a
+640 px window at about 170% instead of sitting at 100% in the middle. Previously the zoom level from
+the last session was restored, which could leave a large photo showing only a corner on open; that
+restore is gone.
 
 ### Small windows
 
@@ -249,11 +252,30 @@ window still shows canvas, tools and colour at once without horizontal scrolling
 ### Cross-origin images and the palette
 
 If an image is served from another origin the canvas is tainted, so pixels cannot be read. The script
-then fetches the bytes through `GM_xmlhttpRequest` (which is not subject to page CORS) and works from
-that copy. This path used to be able to re-enter itself endlessly — the palette builder asked for the
-CORS copy, the copy arrived, and the builder asked again because the taint check never looked at the
-copy — which locked the tab on some sites. It is now one-shot: a flag allows a single attempt and a
-1x1 pixel probe confirms the copy is readable before any further work.
+then fetches a readable copy and every pixel tool — OCR, QR, perspective, palette, eyedropper, export —
+works from that copy.
+
+The copy is obtained in three steps, cheapest first: a plain `fetch` with mode `cors` (works on any
+CDN that answers with `Access-Control-Allow-Origin`), then an `<img>` with `crossOrigin='anonymous'`,
+and only as a last resort `GM_xmlhttpRequest`. Nothing here asks you for permission to reach arbitrary
+domains: the script declares no `@connect *`, and when a host refuses CORS there is simply no pixel
+access — you get an honest message instead of a permission prompt.
+
+Two bugs used to hide behind this. The palette builder could re-enter itself endlessly (it asked for
+the CORS copy, the copy arrived, and it asked again because the taint check never looked at the copy),
+which locked the tab; it is now one-shot with a flag and a 1x1 pixel probe. And `ensurePixels()`
+returned the original `<img>` even when only the CORS copy was readable, so `getImageData` threw and
+the QR decoder silently reported "code not found" on any cross-origin picture; the readable copy now
+always wins. Cropped regions are also rescaled from original-image coordinates to the copy's own
+size, so the right rectangle is cut out.
+
+### The properties panel
+
+The right-hand panel starts **collapsed** into a 30 px strip, so the image — not the interface — is
+what you see when the window opens. Move the pointer to the right edge of the window and the panel
+slides out; move away and it folds back. The pin button at the bottom of the panel keeps it open
+permanently, and that choice is remembered between sessions. Collapsing a pinned panel releases the
+pin, so the fold button never looks dead.
 
 ### Floating window ergonomics
 
@@ -309,12 +331,12 @@ The script also checks for updates on its own: once a day, in the background aft
 loads (skipped while the magnifier window is open), never more than one request per day.
 **Tampermonkey menu → Image Magnifier: Проверить обновления** runs a check on demand. When a
 newer version exists, a dismissible banner links to the raw file and appears once per version.
-Version segments are compared numerically, so `3.12.0` is correctly newer than `3.9.0`.
+Version segments are compared numerically, so `3.13.0` is correctly newer than `3.9.0`.
 
 ### Script Version
 
 | File | Script Name | Version | Status |
 |---|---|---|---|
-| `imgMagnifier.user.js` | Image Magnifier | 3.12.0 | Current — installable |
+| `imgMagnifier.user.js` | Image Magnifier | 3.13.0 | Current — installable |
 
 ---

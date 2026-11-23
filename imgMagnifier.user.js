@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Image Magnifier
 // @namespace    https://github.com/diple-df/Image-Magnifier
-// @version      3.12.0
+// @version      3.13.0
 // @description  Двойной Ctrl по изображению открывает его в плавающем окне: зум 5–2000% с привязкой к курсору, панорамирование, инструменты рисования (карандаш, линия, стрелка, прямоугольник, эллипс, текст), палитра изображения, перспективная коррекция, чтение текста и QR, экспорт PNG/JPEG/WebP, отмена/повтор, полностью клавиатурный режим, копирование (Ctrl+C) и сохранение (Ctrl+S)
 // @author       diple_df x claude
 // @match        *://*/*
@@ -102,7 +102,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         const STAMP_KEY = 'img_mag_upd_ts';
         const SEEN_KEY = 'img_mag_upd_seen';
         const DAY = 86400000;
-        const LOCAL_VERSION = '3.12.0';
+        const LOCAL_VERSION = '3.13.0';
 
         function curVer() {
             try {
@@ -113,7 +113,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
             return LOCAL_VERSION;
         }
 
-        // Сравнение по числовым сегментам: 3.12.0 больше 3.9.0 (строкой — нет).
+        // Сравнение по числовым сегментам: 3.13.0 больше 3.9.0 (строкой — нет).
         function cmp(a, b) {
             const pa = String(a || '').split(/[.\-+]/);
             const pb = String(b || '').split(/[.\-+]/);
@@ -619,7 +619,11 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
     let propsEl = null;       // правая панель свойств
     let statusBarEl = null;   // строка состояния под картинкой
     let propsFolded = true;   // панель свойств свёрнута: картинка важнее интерфейса
-    let propsPinned = false;  // закреплена навсегда (не прячется на уходе курсора)
+    let propsPinned = false;
+    // Пользователь свернул панель вручную. Пока курсор не уйдёт из правой
+    // зоны, наведение не должно её снова раскрывать — иначе кажется,
+    // что кнопка «Свернуть» не работает.
+    let propsLock = false;  // закреплена навсегда (не прячется на уходе курсора)
     let propsHover = false;   // курсор сейчас в зоне раскрытия справа
 
     let scale = 1, tx = 0, ty = 0;
@@ -1335,6 +1339,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
             '#img-mag-window .imv-fold:hover{background:rgba(255,255,255,.08);color:#fff;}',
             '#img-mag-window .imv-fold svg{width:11px;height:11px;transition:transform .15s;}',
             '#img-mag-window .imv-props.is-folded{flex:0 0 30px;width:30px;}',
+        '#img-mag-window .imv-props.is-folded .imv-propspin{display:none;}',,
             '#img-mag-window .imv-props.is-folded .imv-propstitle,',
             '#img-mag-window .imv-props.is-folded .imv-propshead kbd,',
             '#img-mag-window .imv-props.is-folded .imv-propsbody,',
@@ -1969,7 +1974,9 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
     // Зона — правые 28px картинки; уход с неё сворачивает панель обратно,
     // если она не закреплена.
     function onPropsHoverEdge(on) {
-        if (propsPinned) { on = false; }
+        // Курсор ушёл из правой зоны — ручное сворачивание больше не нужно.
+        if (!on) propsLock = false;
+        if (propsPinned || propsLock) { on = false; }
         // Курсор на самой панели — тоже «в зоне»: иначе она схлопнется
         // в момент, когда пользователь тянется к ползунку.
         if (!on && propsEl && !propsEl.classList.contains('is-folded')) {
@@ -2018,9 +2025,32 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         fold.addEventListener('mousedown', (e) => e.stopPropagation());
         fold.addEventListener('click', (e) => {
             e.stopPropagation();
-            propsFolded = !propsFolded;
-            applyUiCfg();
-            if (!propsFolded && viewEl) { viewRect = null; fitCanvas(); invalidate(); }
+            const eff = propsPinned ? false : (propsFolded && !propsHover);
+            if (eff) {
+                // Развернуть: снимаем и ручную блокировку, и закрепление.
+                propsFolded = false;
+                propsLock = false;
+                applyUiCfg();
+            } else {
+                // Свернуть. Если панель закреплена — заодно отпускаем её,
+                // иначе закрепление отменяло бы сворачивание и кнопка
+                // выглядела бы «мёртвой».
+                propsFolded = true;
+                propsLock = true;
+                propsHover = false;
+                if (propsPinned) {
+                    propsPinned = false;
+                    storeSet('img_mag_propspin', '0');
+                    const pinBtn = propsEl && propsEl.querySelector('.imv-propspin');
+                    if (pinBtn) {
+                        pinBtn.setAttribute('aria-pressed', 'false');
+                        pinBtn.classList.remove('is-on');
+                        pinBtn.title = 'Держать панель раскрытой';
+                    }
+                }
+                applyUiCfg();
+            }
+            if (viewEl) { viewRect = null; fitCanvas(); invalidate(); }
         });
         foot.appendChild(fold);
 
@@ -2042,6 +2072,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
             // При закреплении сразу раскрываем; при откреплении возвращаем
             // поведение «свёрнута, пока курсор не в правой зоне».
             propsFolded = !propsPinned;
+            propsLock = false;
             pin.setAttribute('aria-pressed', String(propsPinned));
             pin.classList.toggle('is-on', propsPinned);
             pin.title = propsPinned ? 'Панель закреплена — нажмите, чтобы отпустить' : 'Держать панель раскрытой';
@@ -2395,6 +2426,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         pinned = storeGet('img_mag_pin') === '1';
         propsPinned = storeGet('img_mag_propspin') === '1';
         propsHover = false;
+        propsLock = false;
         propsFolded = !propsPinned;
         ghostMode = false;
         translucent = storeGet('img_mag_translucent') === '1';
@@ -3413,8 +3445,9 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
             if (!vw || !vh) return;
             viewW = vw; viewH = vh;
         }
-        // не увеличиваем маленькие картинки сверх 100%
-        scale = clamp(Math.min(viewW / iw, viewH / ih, 1), ZOOM_MIN, ZOOM_MAX);
+        // Вписываем в окно в обе стороны: маленькая картинка должна занимать
+        // окно, а не половину. Предел 4x — чтобы иконка 16 px не раздувалась.
+        scale = clamp(Math.min(viewW / iw, viewH / ih, 4), ZOOM_MIN, ZOOM_MAX);
         tx = (viewW - iw * scale) / 2;
         ty = (viewH - ih * scale) / 2;
         apply();
@@ -4789,6 +4822,14 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
                 w = Math.max(1, Math.round(w * k));
                 h = Math.max(1, Math.round(h * k));
             }
+            // Прямоугольник пришёл в пикселях исходной картинки, а источник
+            // может быть копией другого размера — приводим масштаб.
+            const iw0 = imageW() || w;
+            const ih0 = imageH() || h;
+            const sw = src.naturalWidth || src.width || iw0;
+            const sh = src.naturalHeight || src.height || ih0;
+            const kx = sw / iw0;
+            const ky = sh / ih0;
             try {
                 const cv = document.createElement('canvas');
                 cv.width = w;
@@ -4797,7 +4838,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
                 if (!c) return null;
                 c.imageSmoothingEnabled = true;
                 if (c.imageSmoothingQuality) c.imageSmoothingQuality = 'high';
-                c.drawImage(src, rect.x, rect.y, rect.w, rect.h, 0, 0, w, h);
+                c.drawImage(src, rect.x * kx, rect.y * ky, rect.w * kx, rect.h * ky, 0, 0, w, h);
                 return cv;
             } catch (e) {
                 return null;
@@ -5492,18 +5533,31 @@ return self.jsQR;})();
     // Tampermonkey не подчиняется политике origin, и подсовываем как Blob.
     // Без этого canvas с чужой картинки «отравлен»: getImageData/toBlob
     // падают, а значит не работают текст, палитра, пипетка и экспорт.
+    // Доступ к пикселям чужой картинки. Порядок попыток важен:
+    // 1) обычный fetch — работает, если сервер отдаёт CORS-заголовки
+    //    (так делают почти все CDN). Никаких прав расширения не нужно.
+    // 2) <img crossorigin="anonymous"> — тот же CORS, но через декодер
+    //    браузера; иногда проходит там, где fetch заблокирован политикой.
+    // 3) GM_xmlhttpRequest — последняя попытка. Права @connect сюда
+    //    намеренно НЕ выданы (иначе Tampermonkey спрашивает разрешение
+    //    на домены при первом запуске), поэтому обычно не срабатывает.
+    // Раньше стоял только GM-путь и при ошибке он делал resolve(null),
+    // из-за чего до fetch дело не доходило вообще: на любой картинке с
+    // чужого домена все пиксельные инструменты писали «нет доступа».
     function loadCorsImage() {
         if (corsImage) return Promise.resolve(corsImage);
         if (corsTried) return Promise.resolve(null);
         corsTried = true;
 
-        const viaBlob = (blob) => new Promise((resolve) => {
+        const remember = (im) => { corsImage = im; return im; };
+
+        const fromBlob = (blob) => new Promise((resolve) => {
             if (!blob) { resolve(null); return; }
             let url;
             try { url = URL.createObjectURL(blob); } catch (e) { resolve(null); return; }
             const im = new Image();
             im.onload = () => {
-                corsImage = im;
+                remember(im);
                 // отзываем позже: объект уже декодирован в память
                 setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) { /* ignore */ } }, 1000);
                 resolve(im);
@@ -5512,52 +5566,71 @@ return self.jsQR;})();
             im.src = url;
         });
 
+        const fromCrossOriginImg = (url) => new Promise((resolve) => {
+            const im = new Image();
+            im.crossOrigin = 'anonymous';
+            im.onload = () => resolve(remember(im));
+            im.onerror = () => resolve(null);
+            im.src = url;
+        });
+
+        const fromGm = (url) => new Promise((resolve) => {
+            if (typeof GM_xmlhttpRequest !== 'function') { resolve(null); return; }
+            let done = false;
+            const fin = (v) => { if (!done) { done = true; resolve(v); } };
+            try {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: url,
+                    responseType: 'blob',
+                    timeout: 15000,
+                    onload: (res) => {
+                        if (res && res.status >= 200 && res.status < 300 && res.response) {
+                            fromBlob(res.response).then(fin);
+                        } else {
+                            fin(null);
+                        }
+                    },
+                    onerror: () => fin(null),
+                    ontimeout: () => fin(null),
+                });
+            } catch (e) { fin(null); }
+        });
+
         return new Promise((resolve) => {
             if (!imageUrl || !/^https?:/i.test(imageUrl)) { resolve(null); return; }
+            const url = imageUrl;
 
-            // 1) Прямой запрос с WebRequest-правами расширения.
-            if (typeof GM_xmlhttpRequest === 'function') {
-                try {
-                    GM_xmlhttpRequest({
-                        method: 'GET',
-                        url: imageUrl,
-                        responseType: 'blob',
-                        timeout: 15000,
-                        onload: (res) => {
-                            if (res && res.status >= 200 && res.status < 300 && res.response) {
-                                viaBlob(res.response).then(resolve);
-                            } else {
-                                resolve(null);
-                            }
-                        },
-                        onerror: () => resolve(null),
-                        ontimeout: () => resolve(null),
-                    });
-                    return;
-                } catch (e) { /* падаем в обычный fetch */ }
-            }
+            const tryFetch = () => {
+                if (typeof fetch !== 'function') return Promise.resolve(null);
+                return fetch(url, { mode: 'cors', credentials: 'omit', cache: 'force-cache' })
+                    .then((r) => (r && r.ok ? r.blob() : null))
+                    .then(fromBlob)
+                    .catch(() => null);
+            };
 
-            // 2) Обычный fetch: сработает, если сайт отдаёт CORS-заголовки.
-            if (typeof fetch === 'function') {
-                fetch(imageUrl, { mode: 'cors', credentials: 'omit', cache: 'force-cache' })
-                    .then((r) => (r.ok ? r.blob() : null))
-                    .then(viaBlob)
-                    .then(resolve)
-                    .catch(() => resolve(null));
-                return;
-            }
-            resolve(null);
+            tryFetch().then((im) => {
+                if (im) { resolve(im); return; }
+                fromCrossOriginImg(url).then((im2) => {
+                    if (im2) { resolve(im2); return; }
+                    fromGm(url).then((im3) => resolve(im3 || null));
+                });
+            });
         });
     }
 
-    // Есть ли пиксельный доступ. Требуется для палитры/пипетки/текста:
-    // на «отравленном» canvas эти функции молча не работают.
     function pixelsReady() { return canExport === true; }
 
     // Пробуем получить пиксельный доступ и заодно подгружаем CORS-копию.
     // Возвращает Promise с источником, у которого точно есть getImageData.
     function ensurePixels() {
         if (canExport === null) checkExportable();
+        // CORS-копия приоритетнее. canExport мог включиться именно из-за неё
+        // (палитра проверяет копию), а сам <img> при этом остаётся «грязным»:
+        // drawImage на него не бросает, зато следующий getImageData — да, и
+        // декодер молча возвращал «код не найден» на любой кросс-доменной
+        // картинке. Копия читается всегда, поэтому её и берём.
+        if (corsImage) return Promise.resolve(corsImage);
         if (canExport === true) return Promise.resolve(sourceEl());
         return loadCorsImage().then((im) => im || null);
     }
