@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Image Magnifier
 // @namespace    https://github.com/diple-df/Image-Magnifier
-// @version      3.14.1
+// @version      3.15.0
 // @description  Двойной Ctrl по изображению открывает его в плавающем окне: зум 5–2000% с привязкой к курсору, панорамирование, инструменты рисования (карандаш, линия, стрелка, прямоугольник, эллипс, текст, ластик), круговой HSV-выбор цвета, сетка пикселей, закрепление окна и панели, отмена и повтор, полностью клавиатурный режим
 // @author       diple_df x claude
 // @match        *://*/*
@@ -102,7 +102,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         const STAMP_KEY = 'img_mag_upd_ts';
         const SEEN_KEY = 'img_mag_upd_seen';
         const DAY = 86400000;
-        const LOCAL_VERSION = '3.14.1';
+        const LOCAL_VERSION = '3.15.0';
 
         function curVer() {
             try {
@@ -113,7 +113,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
             return LOCAL_VERSION;
         }
 
-        // Сравнение по числовым сегментам: 3.14.1 больше 3.9.0 (строкой — нет).
+        // Сравнение по числовым сегментам: 3.15.0 больше 3.9.0 (строкой — нет).
         function cmp(a, b) {
             const pa = String(a || '').split(/[.\-+]/);
             const pb = String(b || '').split(/[.\-+]/);
@@ -610,7 +610,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
     let textInput = null;
     let zoomLabel = null;
     let undoBtn = null, redoBtn = null, fillBtn = null;
-    let pinBtn = null, moreBtn = null;
+    let moreBtn = null;
     let toolButtons = {};
     let imageUrl = '';
 
@@ -619,6 +619,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
     let propsEl = null;       // правая панель свойств
     let statusBarEl = null;   // строка состояния под картинкой
     let propsFolded = true;   // панель свойств свёрнута: картинка важнее интерфейса
+    let propsPinned = false;  // панель закреплена — не прячется при уходе курсора
     let propsHover = false;   // курсор сейчас в зоне раскрытия справа
 
     let scale = 1, tx = 0, ty = 0;
@@ -651,7 +652,6 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
     let quickRecent = [];        // последние использованные цвета (4.3)
     let quickPins = [];          // закреплённые быстрые цвета (4.3)
     // (нативный <input type=color> убран: цвет выбирается HSV-кругом)     // <input type=color>
-    let pinned = false;          // окно не закрывается от клика мимо (5.3)
     let ghostMode = false;       // «только смотреть»: клики сквозь картинку
     let translucent = false;     // полупрозрачное окно
     let pixelGrid = false;       // сетка пикселей при ≥800% (9.3)
@@ -1050,21 +1050,29 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
             viewEl.style.pointerEvents = ghostMode ? 'none' : '';
             viewEl.style.cursor = ghostMode ? 'default' : (currentTool === 'move' ? 'grab' : 'crosshair');
         }
-        if (pinBtn) {
-            setBtnActive(pinBtn, pinned);
-            pinBtn.title = (pinned ? 'Открепить' : 'Закрепить') + ' окно (Shift+P)';
-            pinBtn.setAttribute('aria-label', pinBtn.title);
-            pinBtn.setAttribute('aria-pressed', pinned ? 'true' : 'false');
+        // Закрепление окна убрано: управляет только панель.
+        const pin = propsEl && propsEl.querySelector('.imv-propspin');
+        if (pin) {
+            pin.setAttribute('aria-pressed', propsPinned ? 'true' : 'false');
+            pin.classList.toggle('is-on', propsPinned);
+            pin.title = propsPinned ? 'Открепить панель' : 'Закрепить панель';
+            const sp = pin.querySelector('span');
+            if (sp) sp.textContent = propsPinned ? 'Открепить' : 'Закрепить';
         }
-        win.setAttribute('data-pinned', pinned ? '1' : '0');
     }
 
-    function togglePin(force) {
-        const next = (force === undefined) ? !pinned : !!force;
-        pinned = next;
-        storeSet('img_mag_pin', pinned ? '1' : '0');
+    // Закрепление панели: закреплена — раскрыта всегда, курсор не важен.
+    function togglePropsPin(force) {
+        const next = (force === undefined) ? !propsPinned : !!force;
+        propsPinned = next;
+        storeSet('img_mag_propspin', propsPinned ? '1' : '0');
+        propsFolded = !propsPinned;
         applyWindowLook();
-        announce(pinned ? 'Окно закреплено — клик мимо не закрывает' : 'Окно откреплено');
+        if (propsEl) {
+            const eff = propsFolded && !propsHover;
+            propsEl.classList.toggle('is-folded', !!eff);
+        }
+        announce(propsPinned ? 'Панель закреплена' : 'Панель откреплена');
     }
 
     function toggleGhost(force) {
@@ -1408,7 +1416,6 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         const btnFit = headBtn('fit', 'По размеру окна (Ctrl+1)', () => fitImage());
         zoom.append(btnOut, zoomLabel, btnIn, btnFit);
 
-        pinBtn = headBtn('pin', 'Закрепить окно (Shift+P)', () => togglePin());
         const helpBtn = headBtn('help', 'Горячие клавиши (?)', () => toggleHelp());
         const setBtn = headBtn('sliders', 'Настройки интерфейса', (e) => openUiSettings(e.currentTarget));
         setBtn.setAttribute('aria-haspopup', 'true');
@@ -1418,7 +1425,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         const sepA = document.createElement('div');
         sepA.className = 'imv-sep';
 
-        head.append(title, zoom, sepA, pinBtn, helpBtn, setBtn, moreBtn, closeBtn);
+        head.append(title, zoom, sepA, helpBtn, setBtn, moreBtn, closeBtn);
         applyWindowLook();
         return head;
     }
@@ -1926,6 +1933,8 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
     // Зона — правые 28px картинки; уход с неё сворачивает панель обратно,
     // если она не закреплена.
     function onPropsHoverEdge(on) {
+        // Закреплённая панель не реагирует на курсор вообще.
+        if (propsPinned) on = false;
         // Курсор на самой панели — тоже «в зоне»: иначе она схлопнется
         // в момент, когда пользователь тянется к ползунку.
         if (!on && propsEl && !propsEl.classList.contains('is-folded')) {
@@ -1940,11 +1949,11 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         // на каждое движение мыши слишком дорого.
         const eff = propsFolded && !propsHover;
         propsEl.classList.toggle('is-folded', !!eff);
-        // Панель меняет ширину вьюпорта с transition 130 мс. Если картинка
-        // была вписана — заново вписываем её в новый размер, но только
-        // ПОСЛЕ завершения анимации: сразу после toggle вьюпорт ещё
-        // промежуточной ширины, и рефит под неё оставляет картинку
-        // обрезанной.
+        // Панель сужает вьюпорт с transition 130 мс. Масштаб СОХРАНЯЕМ:
+        // картинка не должна уменьшаться при открытии панели — края
+        // просто скрываются за окном, при закрытии всё возвращается.
+        // Рефит нужен только когда картинка была вписана в УЖЕ узкий
+        // вьюпорт и теперь есть куда расшириться (после закрытия).
         if (viewEl) {
             const iw = imageW(), ih = imageH();
             const wasFit = iw && viewH && Math.abs(scale - Math.min(viewW / iw, viewH / ih, 4)) < 0.001;
@@ -1955,7 +1964,9 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
                 if (!win) return;
                 viewRect = null;
                 fitCanvas();
-                if (wasFit) fitImage(); else invalidate();
+                // Раскрытие: масштаб не трогаем. Закрытие: если картинка
+                // была вписана в узкий вьюпорт — вписываем в широкий.
+                if (!propsHover && wasFit) fitImage(); else invalidate();
             }, 160);
         }
     }
@@ -1979,6 +1990,23 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
 
         const foot = document.createElement('div');
         foot.className = 'imv-propsfoot';
+
+        const pin = document.createElement('button');
+        pin.type = 'button';
+        pin.className = 'imv-fold imv-propspin';
+        pin.setAttribute('aria-pressed', String(propsPinned));
+        pin.setAttribute('aria-label', propsPinned ? 'Открепить панель' : 'Закрепить панель');
+        pin.title = propsPinned ? 'Открепить панель' : 'Закрепить панель';
+        pin.appendChild(makeIcon(ICONS.pin));
+        const pinSpan = document.createElement('span');
+        pinSpan.textContent = propsPinned ? 'Открепить' : 'Закрепить';
+        pin.appendChild(pinSpan);
+        pin.addEventListener('mousedown', (e) => e.stopPropagation());
+        pin.addEventListener('click', (e) => {
+            e.stopPropagation();
+            togglePropsPin();
+        });
+        foot.append(pin);
 
         props.append(head, propsBody, foot);
         return props;
@@ -2301,7 +2329,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         penColor = storeGet('img_mag_color') || '#ff3b30';
         penWidth = clamp(storeNum('img_mag_width', 4), 1, 40);
         fillShapes = storeGet('img_mag_fill') === '1';
-        pinned = storeGet('img_mag_pin') === '1';
+        propsPinned = storeGet('img_mag_propspin') === '1';
         propsHover = false;
         propsFolded = true;
         ghostMode = false;
@@ -2399,7 +2427,11 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         // курсор до слушателя на нём просто не доходил.
         win.addEventListener('mousemove', (e) => {
             const r = win.getBoundingClientRect();
-            onPropsHoverEdge(e.clientX >= r.right - 84);
+            // Зона раскрытия — узкая полоса у правого края (24px + сама
+            // свёрнутая панель). Зона закрытия — та же полоса: курсор
+            // ушёл левее края — панель схлопывается (если не на ней).
+            const edge = r.right - 24 - (propsEl && !propsEl.classList.contains('is-folded') ? propsEl.getBoundingClientRect().width : 26);
+            onPropsHoverEdge(e.clientX >= edge);
         });
         win.addEventListener('mouseleave', () => onPropsHoverEdge(false));
         document.addEventListener('pointermove', onRailDragMove);
@@ -4017,7 +4049,6 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
             return;
         }
         if (menuEl) closeMenu();
-        if (pinned) return;            // 5.3: закреплённое окно не закрывается
         closeWindow();
     }
 
@@ -4201,9 +4232,9 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
     function openMoreMenu(anchorBtn) {
         openPanel(anchorBtn, 'Вид и окно', (p) => {
             menuItem(p, {
-                label: pinned ? 'Открепить окно' : 'Закрепить окно', icon: 'pin', hint: 'Shift+P',
-                check: pinned,
-                onClick: () => togglePin(),
+                label: propsPinned ? 'Открепить панель' : 'Закрепить панель', icon: 'pin',
+                check: propsPinned,
+                onClick: () => togglePropsPin(),
             });
             menuItem(p, {
                 label: 'Полупрозрачное окно', icon: 'more',
@@ -4547,14 +4578,14 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
             return;
         }
         if (key === 'p' && !e.shiftKey && !e.ctrlKey) {
-            // P остаётся карандашом (старая привычка), закрепление — Shift+P
+            // P остаётся карандашом, закрепление панели — Shift+P
             e.preventDefault();
             setTool('pen');
             return;
         }
         if ((key === 'p' || key === 'з') && e.shiftKey) {
             e.preventDefault();
-            togglePin();
+            togglePropsPin();
             return;
         }
         if (TOOL_KEYS[key]) {
@@ -4697,7 +4728,6 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         undoBtn = null;
         redoBtn = null;
         fillBtn = null;
-        pinBtn = null;
         moreBtn = null;
         toolButtons = {};
         railEl = null;

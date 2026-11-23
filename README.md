@@ -5,7 +5,7 @@
 > rectangle, ellipse, text and an eraser. Pick colours from a round HSV wheel, flip a pixel grid on
 > for pixel art, and undo or redo anything you draw.
 >
-> **Author:** diple_df x claude · **Version:** 3.14.1
+> **Author:** diple_df x claude · **Version:** 3.15.0
 
 ### Demo
 
@@ -273,12 +273,12 @@ The script also checks for updates on its own: once a day, in the background aft
 loads (skipped while the magnifier window is open), never more than one request per day.
 **Tampermonkey menu → Image Magnifier: Проверить обновления** runs a check on demand. When a
 newer version exists, a dismissible banner links to the raw file and appears once per version.
-Version segments are compared numerically, so `3.14.1` is correctly newer than `3.9.0`.
+Version segments are compared numerically, so `3.15.0` is correctly newer than `3.9.0`.
 
 ### Script Version
 
 | File | Script Name | Version | Status |
 |---|---|---|---|
-| `imgMagnifier.user.js` | Image Magnifier | 3.14.1 | Current — installable |
+| `imgMagnifier.user.js` | Image Magnifier | 3.15.0 | Current — installable |
 
 ---
