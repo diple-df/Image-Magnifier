@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Image Magnifier
 // @namespace    https://github.com/diple-df/Image-Magnifier
-// @version      3.11.0
+// @version      3.11.1
 // @description  Двойной Ctrl по изображению открывает его в плавающем окне: зум 5–2000% с привязкой к курсору, панорамирование, инструменты рисования (карандаш, линия, стрелка, прямоугольник, эллипс, текст), палитра изображения, перспективная коррекция, чтение текста и QR, экспорт PNG/JPEG/WebP, отмена/повтор, полностью клавиатурный режим, копирование (Ctrl+C) и сохранение (Ctrl+S)
 // @author       diple_df x claude
 // @match        *://*/*
@@ -103,7 +103,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         const STAMP_KEY = 'img_mag_upd_ts';
         const SEEN_KEY = 'img_mag_upd_seen';
         const DAY = 86400000;
-        const LOCAL_VERSION = '3.11.0';
+        const LOCAL_VERSION = '3.11.1';
 
         function curVer() {
             try {
@@ -114,7 +114,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
             return LOCAL_VERSION;
         }
 
-        // Сравнение по числовым сегментам: 3.11.0 больше 3.9.0 (строкой — нет).
+        // Сравнение по числовым сегментам: 3.11.1 больше 3.9.0 (строкой — нет).
         function cmp(a, b) {
             const pa = String(a || '').split(/[.\-+]/);
             const pb = String(b || '').split(/[.\-+]/);
@@ -1268,6 +1268,22 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
             'color:#fff;border:none;cursor:pointer;font-size:11.5px;font-variant-numeric:tabular-nums;outline:none;}',
             '#img-mag-window .imv-zoomval:hover{background:rgba(255,255,255,.14);}',
             '#img-mag-window .imv-body{display:flex;flex:1 1 auto;min-height:0;min-width:0;position:relative;}',
+            // Компактный режим: узкое окно — узкие элементы.
+            '#img-mag-window.imv-narrow .imv-rail{flex-basis:50px;width:50px;}',
+            '#img-mag-window.imv-narrow .imv-railbtn{width:44px;height:24px;}',
+            '#img-mag-window.imv-narrow .imv-railbtn svg{width:15px;height:15px;}',
+            '#img-mag-window.imv-narrow .imv-cathead{font-size:6.5px;min-height:14px;padding:2px 2px 1px;}',
+            '#img-mag-window.imv-narrow .imv-props{flex-basis:150px;width:150px;}',
+            '#img-mag-window.imv-narrow .imv-hsvwrap,#img-mag-window.imv-narrow .imv-hsvcv{width:112px;height:112px;}',
+            '#img-mag-window.imv-narrow .imv-thick{min-width:22px;font-size:10.5px;}',
+            '#img-mag-window.imv-tiny .imv-rail{flex-basis:42px;width:42px;}',
+            '#img-mag-window.imv-tiny .imv-railbtn{width:36px;height:22px;}',
+            '#img-mag-window.imv-tiny .imv-railbtn svg{width:14px;height:14px;}',
+            '#img-mag-window.imv-tiny .imv-cathead{font-size:6px;min-height:13px;}',
+            '#img-mag-window.imv-tiny .imv-head{height:32px;flex-basis:32px;padding:0 4px 0 8px;}',
+            '#img-mag-window.imv-tiny .imv-title{font-size:11px;}',
+            '#img-mag-window.imv-tiny .imv-zoomval{min-width:36px;font-size:10.5px;padding:2px 4px;}',
+            '#img-mag-window.imv-tiny .imv-btn{width:26px;height:24px;}',
             '#img-mag-window .imv-rail{flex:0 0 62px;width:62px;display:flex;flex-direction:column;align-items:stretch;',
             'gap:1px;padding:5px 0 6px;background:var(--imv-rail);border-right:1px solid var(--imv-line);',
             'overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;box-sizing:border-box;}',
@@ -1778,6 +1794,9 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         vrow.append(vnm, vr, vval);
 
         hsvRefs = { cv: cv, dot: dot, vr: vr, vval: vval, hex: hex, swatch: null };
+        // Холст новый и пустой, а кэш «какая яркость нарисована» общий для
+        // модуля. Без сброса при смене инструмента колесо оставалось чёрным.
+        wheelPaintedV = -1;
 
         const pickFrom = (ev) => {
             const r = cv.getBoundingClientRect();
@@ -2092,6 +2111,25 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
     }
 
     // --- Настройки интерфейса ---------------------------------------------
+    // Одноразовость попытки CORS-копии для палитры (защита от рекурсии).
+    let paletteCorsTried = false;
+
+    // Доступны ли пиксели у конкретной картинки. 1×1 холст, поэтому дёшево.
+    function corsPixelsOk(img) {
+        if (!img) return false;
+        try {
+            const c = document.createElement('canvas');
+            c.width = 1;
+            c.height = 1;
+            const x = c.getContext('2d');
+            x.drawImage(img, 0, 0, 1, 1);
+            x.getImageData(0, 0, 1, 1);
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
     let settingsEl = null, settingsRefs = null;
 
     function uiSwitchRow(label, hint, on, onChange) {
@@ -2428,6 +2466,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
 
         setTool(storeGet('img_mag_tool') || 'move', true);
         updateHistoryButtons();
+        syncCompactMode();
         applyUiCfg();
         renderPropsPanel();
         syncStatus();
@@ -2442,14 +2481,12 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
             fitCanvas();
             if (!loadedOnce) {
                 loadedOnce = true;
-                if (isFinite(savedScale) && savedScale > 0) {
-                    scale = clamp(savedScale, ZOOM_MIN, ZOOM_MAX);
-                    tx = (viewW - imageW() * scale) / 2;
-                    ty = (viewH - imageH() * scale) / 2;
-                    apply();
-                } else {
-                    fitImage();
-                }
+                // Всегда вписываем целиком: сохранённый масштаб с прошлой
+                // сессии приводил к тому, что картинка не видна полностью
+                // при первом открытии. Полосы лучше обрезки.
+                fitImage();
+                // Раскладка могла быть ещё не готова — повторяем кадром позже.
+                requestAnimationFrame(() => { if (win) fitImage(); });
             } else {
                 invalidate();
             }
@@ -2480,6 +2517,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         dragShape = null;
         lastShape = null;
         imagePalette = [];
+        paletteCorsTried = false;
         pyramid = null;
         pyramidLevel = 0;
         menuEl = null;
@@ -3302,9 +3340,15 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
 
     function fitImage() {
         if (!imgEl || !viewEl) return;
-        if (!fitCanvas()) return;
         const iw = imageW(), ih = imageH();
         if (!iw || !ih) return;
+        // Вьюпорт мог ещё не получить размер (окно только вставили в DOM).
+        // Тогда берём размеры напрямую, иначе scale посчитается от нуля.
+        if (!fitCanvas() || !viewW || !viewH) {
+            const vw = viewEl.clientWidth, vh = viewEl.clientHeight;
+            if (!vw || !vh) return;
+            viewW = vw; viewH = vh;
+        }
         // не увеличиваем маленькие картинки сверх 100%
         scale = clamp(Math.min(viewW / iw, viewH / ih, 1), ZOOM_MIN, ZOOM_MAX);
         tx = (viewW - iw * scale) / 2;
@@ -4189,16 +4233,28 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
     }
 
     // --- Вьюпорт ------------------------------------------------------------
+    // Компактный режим для маленького окна: рейка, кнопки и панель
+    // свойств ужимаются, иначе в окне 300 px они занимают всё место.
+    function syncCompactMode() {
+        if (!win) return;
+        const w = win.clientWidth || 0;
+        win.classList.toggle('imv-narrow', w > 0 && w < 520);
+        win.classList.toggle('imv-tiny', w > 0 && w < 380);
+    }
+
     function onViewportChange() {
         if (!win || !viewEl) return;
         viewRect = null;
+        syncCompactMode();
 
         // ещё ни разу не мерили — просто инициализируем холст
         if (!viewW || !viewH) {
             fitCanvas();
-            if (imageW()) {
-                tx = (viewW - imageW() * scale) / 2;
-                ty = (viewH - imageH() * scale) / 2;
+            if (imageW() && viewW && viewH) {
+                // Размер вьюпорта только что появился — вписываем целиком,
+                // иначе картинка окажется обрезанной при первом открытии.
+                fitImage();
+                return;
             }
             baseValid = false;
             requestDraw();
@@ -4223,16 +4279,34 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
     // ======================================================================
     function buildImagePalette() {
         imagePalette = [];
-        const src = sourceEl();
+        // Палитра — про пиксели, поэтому берём pixelSource(): он учитывает
+        // CORS-копию. С sourceEl() отравленный <img> так и остался бы
+        // источником, и палитра не построилась бы никогда.
+        const src = pixelSource();
         const iw = imageW(), ih = imageH();
         if (!src || !iw || !ih) return;
 
-        // Отравленный canvas: пробуем CORS-копию, иначе палитры не будет
-        if (canExport === false || canExport === null) {
+        // Отравленный canvas: пробуем CORS-копию, иначе палитры не будет.
+        // ВАЖНО: попытка строго одноразовая. Раньше здесь стоял повторный
+        // вызов buildImagePalette(), а loadCorsImage() на втором заходе
+        // отдаёт уже готовый corsImage — цикл обещаний не заканчивался и
+        // вкладка вставала намертво. Это и было причиной зависания.
+        if (canExport !== true) {
             checkExportable();
             if (canExport === false) {
+                if (paletteCorsTried) {
+                    canExport = false;
+                    return;
+                }
+                paletteCorsTried = true;
                 loadCorsImage().then((im) => {
-                    if (im && win) { corsImage = im; buildImagePalette(); }
+                    if (!im || !win) return;
+                    corsImage = im;
+                    // Проверяем доступ к пикселям у самой копии — дальше
+                    // работаем по ней, без нового витка рекурсии.
+                    const ok = corsPixelsOk(im);
+                    if (ok) { canExport = true; buildImagePalette(); }
+                    else { canExport = false; }
                 });
                 return;
             }

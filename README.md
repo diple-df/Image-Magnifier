@@ -5,7 +5,7 @@
 > rectangle, ellipse and text — extract the image palette, straighten a photographed document,
 > read text and QR codes, and export PNG / JPEG / WebP.
 >
-> **Author:** diple_df x claude · **Version:** 3.11.0
+> **Author:** diple_df x claude · **Version:** 3.11.1
 
 ### Demo
 
@@ -229,10 +229,33 @@ probe (export check, palette, mipmap) waits for that smaller copy. Measured on a
 headless Edge: zero long tasks on open, zero during a 40-step zoom, and the full 2000% range still
 reaches. Only the visible region is drawn each frame, so cost follows the window size, not the photo.
 
+### Opening behaviour
+
+Every image opens **fitted to the window**, so the whole picture is visible immediately — scrollbars
+are acceptable, a cropped first view is not. Previously the zoom level from the last session was
+restored, which could leave a large photo showing only a corner on open; that restore is gone.
+
+### Small windows
+
+Below 520 px of window width the interface switches to a compact mode, and below 380 px to a tiny
+one: the rail narrows from 62 to 42 px, rail buttons from 56x27 to 26x24, the properties panel from
+186 to 150 px and the title bar from 38 to 32 px. The colour wheel shrinks with it, so a 300 px wide
+window still shows canvas, tools and colour at once without horizontal scrolling.
+
+### Cross-origin images and the palette
+
+If an image is served from another origin the canvas is tainted, so pixels cannot be read. The script
+then fetches the bytes through `GM_xmlhttpRequest` (which is not subject to page CORS) and works from
+that copy. This path used to be able to re-enter itself endlessly — the palette builder asked for the
+CORS copy, the copy arrived, and the builder asked again because the taint check never looked at the
+copy — which locked the tab on some sites. It is now one-shot: a flag allows a single attempt and a
+1x1 pixel probe confirms the copy is readable before any further work.
+
 ### Floating window ergonomics
 
 The window itself can be dragged by the title bar and resized from the bottom-right corner. Window
-size, position and zoom are remembered. Everything runs locally: no network requests at runtime
+size, position and drawing colour are remembered. The zoom level is deliberately **not** restored —
+every image opens fitted to the window. Everything runs locally: no network requests at runtime
 beyond loading the image you asked to inspect.
 
 ---
@@ -282,12 +305,12 @@ The script also checks for updates on its own: once a day, in the background aft
 loads (skipped while the magnifier window is open), never more than one request per day.
 **Tampermonkey menu → Image Magnifier: Проверить обновления** runs a check on demand. When a
 newer version exists, a dismissible banner links to the raw file and appears once per version.
-Version segments are compared numerically, so `3.11.0` is correctly newer than `3.9.0`.
+Version segments are compared numerically, so `3.11.1` is correctly newer than `3.9.0`.
 
 ### Script Version
 
 | File | Script Name | Version | Status |
 |---|---|---|---|
-| `imgMagnifier.user.js` | Image Magnifier | 3.11.0 | Current — installable |
+| `imgMagnifier.user.js` | Image Magnifier | 3.11.1 | Current — installable |
 
 ---
