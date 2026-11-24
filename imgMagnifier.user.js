@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Image Magnifier
 // @namespace    https://github.com/diple-df/Image-Magnifier
-// @version      3.15.1
+// @version      3.15.2
 // @description  Двойной Ctrl по изображению открывает его в плавающем окне: зум 5–2000% с привязкой к курсору, панорамирование, инструменты рисования (карандаш, линия, стрелка, прямоугольник, эллипс, текст, ластик), круговой HSV-выбор цвета, сетка пикселей, закрепление окна и панели, отмена и повтор, полностью клавиатурный режим
 // @author       diple_df x claude
 // @match        *://*/*
@@ -102,7 +102,7 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
         const STAMP_KEY = 'img_mag_upd_ts';
         const SEEN_KEY = 'img_mag_upd_seen';
         const DAY = 86400000;
-        const LOCAL_VERSION = '3.15.1';
+        const LOCAL_VERSION = '3.15.2';
 
         function curVer() {
             try {
@@ -1244,22 +1244,20 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
             '#img-mag-window .imv-zoomval:hover{background:rgba(255,255,255,.14);}',
             '#img-mag-window .imv-body{display:flex;flex:1 1 auto;min-height:0;min-width:0;position:relative;}',
             // Компактный режим: узкое окно — узкие элементы.
-            '#img-mag-window.imv-narrow .imv-rail{flex-basis:50px;width:50px;}',
-            '#img-mag-window.imv-narrow .imv-railbtn{width:44px;height:24px;}',
+            '#img-mag-window.imv-narrow .imv-railbtn{width:34px;height:24px;}',
             '#img-mag-window.imv-narrow .imv-railbtn svg{width:15px;height:15px;}',
             '#img-mag-window.imv-narrow .imv-cathead{font-size:6.5px;min-height:14px;padding:2px 2px 1px;}',
             '#img-mag-window.imv-narrow .imv-props{flex-basis:150px;width:150px;}',
             '#img-mag-window.imv-narrow .imv-hsvwrap,#img-mag-window.imv-narrow .imv-hsvcv{width:112px;height:112px;}',
             '#img-mag-window.imv-narrow .imv-thick{min-width:22px;font-size:10.5px;}',
-            '#img-mag-window.imv-tiny .imv-rail{flex-basis:42px;width:42px;}',
-            '#img-mag-window.imv-tiny .imv-railbtn{width:36px;height:22px;}',
-            '#img-mag-window.imv-tiny .imv-railbtn svg{width:14px;height:14px;}',
+            '#img-mag-window.imv-tiny .imv-railbtn{width:30px;height:22px;}',
+            '#img-mag-window.imv-tiny .imv-railbtn svg{width:13px;height:13px;}',
             '#img-mag-window.imv-tiny .imv-cathead{font-size:6px;min-height:13px;}',
             '#img-mag-window.imv-tiny .imv-head{height:32px;flex-basis:32px;padding:0 4px 0 8px;}',
             '#img-mag-window.imv-tiny .imv-title{font-size:11px;}',
             '#img-mag-window.imv-tiny .imv-zoomval{min-width:36px;font-size:10.5px;padding:2px 4px;}',
             '#img-mag-window.imv-tiny .imv-btn{width:26px;height:24px;}',
-            '#img-mag-window .imv-rail{flex:0 0 62px;width:62px;display:flex;flex-direction:column;align-items:stretch;',
+            '#img-mag-window .imv-rail{flex:0 0 44px;width:44px;display:flex;flex-direction:column;align-items:stretch;',
             'gap:1px;padding:5px 0 6px;background:var(--imv-rail);border-right:1px solid var(--imv-line);',
             'overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;box-sizing:border-box;}',
             '#img-mag-window .imv-rail[hidden]{display:none;}',
@@ -1273,12 +1271,12 @@ const HUGE_BAND_PIXELS = 1.2 * 1000 * 1000; // пикселей исходник
             'font-weight:600;line-height:1.15;letter-spacing:-.1px;user-select:none;}',
             '#img-mag-window .imv-cathead:hover{background:rgba(255,255,255,.07);color:var(--imv-fg2);}',
             '#img-mag-window .imv-cathead:focus-visible{outline:2px solid var(--imv-accent);outline-offset:-1px;}',
-            '#img-mag-window .imv-catname{flex:1 1 auto;min-width:0;overflow-wrap:break-word;}',
+            '#img-mag-window .imv-catname{display:none;}',
             '#img-mag-window .imv-catchev{width:8px;height:8px;opacity:.5;flex:0 0 auto;transition:transform .15s;}',
             '#img-mag-window .imv-cat.is-collapsed .imv-catchev{transform:rotate(-90deg);}',
             '#img-mag-window .imv-catbody{display:flex;flex-direction:column;align-items:center;gap:1px;}',
             '#img-mag-window .imv-cat.is-collapsed .imv-catbody{display:none;}',
-            '#img-mag-window .imv-railbtn{width:56px;height:27px;border-radius:7px;}',
+            '#img-mag-window .imv-railbtn{width:38px;height:27px;border-radius:7px;}',
             '#img-mag-window .imv-railbtn svg{width:17px;height:17px;}',
             '#img-mag-window .imv-center{display:flex;flex-direction:column;flex:1 1 auto;min-width:0;min-height:0;}',
             '#img-mag-window .imv-status{flex:0 0 28px;height:28px;display:flex;align-items:center;gap:7px;',
